@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-agent-usage",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Devin and Google Antigravity as bb ACP providers, with their plan usage in bb's usage panel.",
   "license": "MIT",
   "type": "module",
@@ -26,10 +26,10 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@get-bb/plugin-sdk": "0.6.54",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.54",
     "@types/better-sqlite3": "^7.6.12",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",

@@ -13,7 +13,7 @@ const DEFAULT_API_SERVER = "https://server.codeium.com";
 const GET_USER_STATUS = "/exa.seat_management_pb.SeatManagementService/GetUserStatus";
 const REQUEST_TIMEOUT_MS = 15_000;
 const CLIENT_NAME = "bb-plugin-agent-usage";
-const CLIENT_VERSION = "0.1.0";
+const CLIENT_VERSION = "0.1.1";
 
 export interface DevinCredentials {
   apiKey: string;
