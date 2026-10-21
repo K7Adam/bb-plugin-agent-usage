@@ -58,6 +58,30 @@ so each agent appears once.
 
 Both sources are undocumented and may change without notice.
 
+## Antigravity temp folder
+
+The Antigravity ACP server is a PyInstaller one-file build. Every start unpacks about 300 MB into a new
+`_MEI…` folder under the temp folder, and only a server that exits on its own removes it again. bb stops
+the server after listing its models, and its health check runs `agy_acp_server --version`, which the
+server does not support, for at most 5 seconds. Each of those starts used to leave a folder behind in the
+system temp folder.
+
+The plugin therefore:
+
+- starts the Antigravity server with `TEMP`, `TMP` and `TMPDIR` set to `agy-temp` under the plugin's
+  bridge data folder on each machine (`~/.bb/plugins/agent-usage/bridge-data/agy-temp` on the server's
+  machine, under `~/.bb-machines/<server>/plugins/…` on an enrolled one),
+- removes leftover `_MEI…` folders there when the bridge starts, before a launch (at most every 5 minutes)
+  and every 30 minutes. A folder is removed only when it is older than 15 minutes and can be renamed,
+  which Windows refuses while a server unpacks into it or runs from it,
+- once at bridge start, removes older leftovers from the system temp folder that contain the Antigravity
+  server's own files (`google3/cloud/developer_experience/antigravity_extensions`),
+- answers bb's health check for Antigravity itself, without starting the server. The version comes from
+  the install folder of the ACP registry archive (`…/agy-acp-server/1.4.1/…`), otherwise it is empty.
+
+Devin is not affected. On a machine where unpacking takes longer than bb's 30-second model list, an
+antivirus exclusion for `agy-temp` alone is enough to speed up every start.
+
 ## Develop
 
 ```sh

@@ -1,14 +1,23 @@
 // The plugin's `bb.host` entry: bb's ACP bridge (acp-next) runs both agents,
 // and two dialects add the maintenance hooks the bridge calls for
-// `provider/health` and `provider/usage`.
+// `provider/health` and `provider/usage`. The exported bridge wraps the ACP
+// bridge so the Antigravity server unpacks into its own temp folder
+// (src/antigravity-bridge.ts).
 
-import { experimental_registerAcpDialect } from "@get-bb/plugin-sdk/provider-bridge/acp-next";
+import { tmpdir } from "node:os";
+
+import { experimental_resolveExecutablePath } from "@get-bb/plugin-sdk/provider-bridge";
+import {
+  experimental_acpProviderBridge,
+  experimental_registerAcpDialect,
+} from "@get-bb/plugin-sdk/provider-bridge/acp-next";
 
 import { ANTIGRAVITY_DIALECT_ID, DEVIN_DIALECT_ID } from "./agents.ts";
+import { createAntigravityBridge } from "./antigravity-bridge.ts";
 import { readAntigravityAccount, readAntigravityUsage } from "./collectors/antigravity.ts";
 import { readDevinAccount, readDevinUsage } from "./collectors/devin.ts";
 
-export { experimental_acpProviderBridge as experimental_providerBridge } from "@get-bb/plugin-sdk/provider-bridge/acp-next";
+const ANTIGRAVITY_LOGIN_COMMAND = "agy_acp_server";
 
 // `installation` is not declared for either provider, so bb never runs these
 // installers; the bridge's dialect type requires one.
@@ -25,9 +34,24 @@ experimental_registerAcpDialect({
 experimental_registerAcpDialect({
   id: ANTIGRAVITY_DIALECT_ID,
   maintenance: {
-    loginCommand: "agy_acp_server",
+    loginCommand: ANTIGRAVITY_LOGIN_COMMAND,
     installer: () => ({ command: "agy", args: ["update"], displayCommand: "agy update" }),
     readAccount: readAntigravityAccount,
     readUsage: readAntigravityUsage,
+  },
+});
+
+export const experimental_providerBridge = createAntigravityBridge(experimental_acpProviderBridge, {
+  health: {
+    loginCommand: ANTIGRAVITY_LOGIN_COMMAND,
+    resolveExecutable: experimental_resolveExecutablePath,
+    readAccount: () => readAntigravityAccount(),
+  },
+  sharedTempDir: tmpdir,
+  write: (line) => {
+    process.stdout.write(line);
+  },
+  log: (message) => {
+    process.stderr.write(`[agent-usage] ${message}\n`);
   },
 });
