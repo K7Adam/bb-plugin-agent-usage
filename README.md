@@ -79,8 +79,25 @@ The plugin therefore:
 - answers bb's health check for Antigravity itself, without starting the server. The version comes from
   the install folder of the ACP registry archive (`…/agy-acp-server/1.4.1/…`), otherwise it is empty.
 
-Devin is not affected. On a machine where unpacking takes longer than bb's 30-second model list, an
-antivirus exclusion for `agy-temp` alone is enough to speed up every start.
+Devin is not affected.
+
+On Windows, an antivirus that checks every new file can make the unpack take far longer than bb's
+30-second model list; on one machine it took about 100 seconds instead of about 20. A Microsoft Defender
+exclusion for `agy-temp` that applies only while the server itself reads or writes there fixes that, and
+other programs touching the folder are still scanned. In an elevated PowerShell:
+
+```powershell
+Add-MpPreference -ExclusionPath "$env:USERPROFILE\.bb\plugins\agent-usage\bridge-data\agy-temp\:{Process:""$env:LOCALAPPDATA\agy-acp-server\*\agy_acp_server.exe""}"
+```
+
+PowerShell expands both paths before Defender sees them. Write them out yourself if you set the exclusion
+elsewhere, because Defender reads variables such as `%LOCALAPPDATA%` as the SYSTEM account's.
+
+## Troubleshooting
+
+- **"External hook '…' failed to execute"** in an Antigravity thread: the ACP server splits hook
+  commands from `~/.gemini/config/hooks.json` like a POSIX shell, so backslashes in a Windows path
+  disappear. Write hook paths with forward slashes (`C:/Users/me/hook.cmd`).
 
 ## Develop
 
