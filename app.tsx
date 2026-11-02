@@ -456,6 +456,61 @@ function popupStyle(position: Position): React.CSSProperties {
   return style;
 }
 
+/** Where the tooltip sits relative to its anchor, derived from the pill's
+ * position on screen — away from the edge it hugs. */
+function tooltipAnchor(cfg: OverlayConfig): React.CSSProperties {
+  if (cfg.orientation === "vertical") {
+    const toRight = cfg.position.endsWith("left");
+    return toRight
+      ? { left: "calc(100% + 7px)", top: "50%", transform: "translateY(-50%)" }
+      : { right: "calc(100% + 7px)", top: "50%", transform: "translateY(-50%)" };
+  }
+  return cfg.position.startsWith("top")
+    ? { top: "calc(100% + 7px)", left: "50%", transform: "translateX(-50%)" }
+    : { bottom: "calc(100% + 7px)", left: "50%", transform: "translateX(-50%)" };
+}
+
+function tooltipOrigin(cfg: OverlayConfig): string {
+  if (cfg.orientation === "vertical")
+    return cfg.position.endsWith("left") ? "left center" : "right center";
+  return cfg.position.startsWith("top") ? "center top" : "center bottom";
+}
+
+/** Pure-CSS hover tooltip styled like the built-in one (inverted colours,
+ * fade + scale in). No JS state — group-hover drives it. */
+function HoverTip({
+  cfg,
+  label,
+  detail,
+  children,
+}: {
+  cfg: OverlayConfig;
+  label: string;
+  detail: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <span className="relative group/tip">
+      {children}
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute z-50 whitespace-nowrap"
+        style={tooltipAnchor(cfg)}
+      >
+        <span
+          className="block scale-90 opacity-0 transition-all duration-150 ease-out group-hover/tip:scale-100 group-hover/tip:opacity-100"
+          style={{ transformOrigin: tooltipOrigin(cfg) }}
+        >
+          <span className="block rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground shadow-md">
+            <span className="block font-medium leading-tight">{label}</span>
+            <span className="block leading-tight opacity-80">{detail}</span>
+          </span>
+        </span>
+      </span>
+    </span>
+  );
+}
+
 // ---------- memoized pieces ----------
 
 const Chip = memo(function Chip({
@@ -473,14 +528,19 @@ const Chip = memo(function Chip({
   const color = tone(left, cfg);
   const critical = cfg.pulseCritical && left <= cfg.critBelow;
   return (
-    <span
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full p-0.5 transition-colors hover:bg-muted/60 ${
-        critical ? "animate-pulse" : ""
-      }`}
-      title={`${provider.displayName} · ${window.label}: ${left}% left${
+    <HoverTip
+      cfg={cfg}
+      label={provider.displayName}
+      detail={`${window.label} · ${left}% left${
         window.resetsAt ? ` · resets in ${countdown(window.resetsAt)}` : ""
       }`}
     >
+      <span
+        aria-label={`${provider.displayName} · ${window.label}: ${left}% left`}
+        className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full p-0.5 transition-colors hover:bg-muted/60 ${
+          critical ? "animate-pulse" : ""
+        }`}
+      >
       <UsageRing left={left} color={color} size={scale.ring} stroke={scale.stroke}>
         {cfg.iconMode === "icon" && (
           <ProviderIcon
@@ -499,10 +559,11 @@ const Chip = memo(function Chip({
       {scale.showName && (
         <span className="text-muted-foreground">{provider.displayName}</span>
       )}
-      {(scale.showName || cfg.showPercent) && (
-        <span style={{ color }}>{left}%</span>
-      )}
-    </span>
+        {(scale.showName || cfg.showPercent) && (
+          <span style={{ color }}>{left}%</span>
+        )}
+      </span>
+    </HoverTip>
   );
 });
 
