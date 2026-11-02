@@ -30,6 +30,7 @@ interface ProviderEntry {
   key: string;
   providerId: string;
   displayName: string;
+  hostId: string;
   hostName: string | null;
   status: string;
   message: string | null;
@@ -211,7 +212,10 @@ function ago(fetchedAt: number): string {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
-async function loadSnapshot(sdk: ReturnType<typeof useSdk>): Promise<Snapshot> {
+async function loadSnapshot(
+  sdk: ReturnType<typeof useSdk>,
+  force = false,
+): Promise<Snapshot> {
   const providers: ProviderEntry[] = [];
   let error: string | null = null;
   let hosts: Awaited<ReturnType<typeof sdk.hosts.list>> = [];
@@ -227,7 +231,7 @@ async function loadSnapshot(sdk: ReturnType<typeof useSdk>): Promise<Snapshot> {
         try {
           const [list, usage] = await Promise.all([
             sdk.providers.list({ hostId: host.id, capability: "usage" }),
-            sdk.system.usageLimits({ hostId: host.id }),
+            sdk.system.usageLimits({ hostId: host.id, refresh: force }),
           ]);
           for (const provider of list) {
             const entry = usage[provider.id];
@@ -235,6 +239,7 @@ async function loadSnapshot(sdk: ReturnType<typeof useSdk>): Promise<Snapshot> {
               key: `${host.id}:${provider.id}`,
               providerId: provider.id,
               displayName: provider.displayName,
+              hostId: host.id,
               hostName: typeof host.name === "string" ? host.name : null,
               status: entry?.status ?? "error",
               message:
@@ -750,25 +755,28 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   const inFlight = useRef(false);
   const lastFetch = useRef(0);
 
-  const refresh = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
-    setLoading(true);
-    try {
-      const next = await loadSnapshot(sdk);
-      lastFetch.current = next.fetchedAt;
-      setSnapshot(next);
-    } catch (cause) {
-      setSnapshot({
-        providers: [],
-        fetchedAt: Date.now(),
-        error: cause instanceof Error ? cause.message : String(cause),
-      });
-    } finally {
-      inFlight.current = false;
-      setLoading(false);
-    }
-  }, [sdk]);
+  const refresh = useCallback(
+    async (force = false) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      setLoading(true);
+      try {
+        const next = await loadSnapshot(sdk, force);
+        lastFetch.current = next.fetchedAt;
+        setSnapshot(next);
+      } catch (cause) {
+        setSnapshot({
+          providers: [],
+          fetchedAt: Date.now(),
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      } finally {
+        inFlight.current = false;
+        setLoading(false);
+      }
+    },
+    [sdk],
+  );
 
   const intervalMs = config.minutes * 60_000;
   const stale = useCallback(
@@ -801,6 +809,27 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
     if (config.enabled && connection === "connected" && stale())
       void refresh();
   }, [config.enabled, connection, refresh, stale]);
+
+  // Refetch when hosts connect or disconnect.
+  useEffect(() => {
+    if (!config.enabled) return;
+    return sdk.subscribe({
+      event: "host:changed",
+      callback: () => {
+        if (!document.hidden) void refresh();
+      },
+    });
+  }, [sdk, config.enabled, refresh]);
+
+  // Escape closes the popup.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open]);
 
   if (!config.enabled) return null;
   if (snapshot === null && !loading) return null;
@@ -842,17 +871,20 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   }
   const uniqueProviders = [...seen.values()];
   const multiHost =
-    new Set(
-      allProviders.map((provider) => provider.hostName ?? provider.key),
-    ).size > 1;
+    new Set(allProviders.map((provider) => provider.hostId)).size > 1;
   const hostLabel =
     [...new Set(allProviders.map((provider) => provider.hostName))]
       .filter(Boolean)
       .join(" · ") || null;
+  // A selected tab whose provider vanished falls back to "All".
+  const activeTab =
+    tab !== null && seen.has(tab) ? tab : null;
   const visibleProviders =
-    tab === null
+    activeTab === null
       ? allProviders
-      : allProviders.filter((provider) => provider.providerId === tab);
+      : allProviders.filter(
+          (provider) => provider.providerId === activeTab,
+        );
 
   return (
     <div
@@ -868,6 +900,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       {open && (
         <div
           role="dialog"
+          aria-label="Provider usage"
           className="overflow-hidden rounded-[10px] border border-border bg-popover shadow-xl"
           style={popupStyle(config.position)}
         >
@@ -885,10 +918,10 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
                   type="button"
                   role="tab"
                   title="All accounts"
-                  aria-selected={tab === null}
+                  aria-selected={activeTab === null}
                   onClick={() => setTab(null)}
                   className={`relative flex h-6 shrink-0 items-center justify-center rounded-md px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                    tab === null
+                    activeTab === null
                       ? "bg-muted text-foreground"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
@@ -896,7 +929,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
                   <span className="text-2xs font-medium">All</span>
                 </button>
                 {uniqueProviders.map((provider) => {
-                  const selected = provider.providerId === tab;
+                  const selected = provider.providerId === activeTab;
                   const sev = provider.severity;
                   return (
                     <button
@@ -915,6 +948,9 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
                       onClick={() =>
                         setTab(selected ? null : provider.providerId)
                       }
+                      // severity dot hidden on the selected tab and in All view
+                      // (mirrors the built-in panel)
+
                       className={`group/tab relative flex h-6 w-7 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
                         selected
                           ? "bg-muted text-foreground"
@@ -930,7 +966,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
                             : "opacity-60 group-hover/tab:opacity-100"
                         }`}
                       />
-                      {sev !== null && !selected && tab !== null && (
+                      {sev !== null && !selected && activeTab !== null && (
                         <span
                           aria-hidden="true"
                           className="absolute right-0.5 top-0.5 size-1.5 rounded-full ring-2 ring-popover"
@@ -950,7 +986,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
             <span className="min-w-0 flex-1" />
             {multiHost && (
               <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">
-                {tab === null ? "All hosts" : hostLabel}
+                {activeTab === null ? "All hosts" : hostLabel}
               </span>
             )}
             <button
@@ -958,7 +994,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
               aria-label="Reload provider usage"
               title="Refresh now"
               disabled={loading}
-              onClick={() => void refresh()}
+              onClick={() => void refresh(true)}
               className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >
               <RotateCcw spinning={loading} />
@@ -980,7 +1016,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
                 key={provider.key}
                 provider={provider}
                 cfg={config}
-                showProvider={tab === null}
+                showProvider={activeTab === null}
                 showHost={multiHost}
               />
             ))}
