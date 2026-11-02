@@ -33,6 +33,25 @@ export default async function plugin(bb: BbPluginApi) {
         "How often the pill polls provider usage. 0 disables background polling; the popup's refresh button always works.",
       default: 2,
     },
+    overlayPosition: {
+      type: "string",
+      label: "Usage pill position",
+      description:
+        "One of top-left, top-center, top-right, bottom-left, bottom-center, bottom-right.",
+      default: "bottom-right",
+    },
+    overlayOrientation: {
+      type: "string",
+      label: "Usage pill orientation",
+      description: "horizontal or vertical.",
+      default: "horizontal",
+    },
+    overlaySize: {
+      type: "string",
+      label: "Usage pill size",
+      description: "compact, comfortable or large.",
+      default: "comfortable",
+    },
   });
   const { devinCommand, antigravityCommand } = await settings.get();
 
