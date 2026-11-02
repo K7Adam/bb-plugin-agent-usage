@@ -366,9 +366,9 @@ const SCALE: Record<
     showName: boolean;
   }
 > = {
-  compact: { font: 10, gap: 4, pad: "4px 7px", ring: 14, stroke: 1.6, icon: "size-2", showName: false },
-  comfortable: { font: 11, gap: 6, pad: "5px 10px", ring: 17, stroke: 1.8, icon: "size-2.5", showName: false },
-  large: { font: 12, gap: 7, pad: "6px 12px", ring: 21, stroke: 2, icon: "size-3", showName: true },
+  compact: { font: 10, gap: 4, pad: "4px 7px", ring: 16, stroke: 1.7, icon: "size-2", showName: false },
+  comfortable: { font: 11, gap: 6, pad: "5px 10px", ring: 18, stroke: 1.8, icon: "size-2.5", showName: false },
+  large: { font: 12, gap: 7, pad: "6px 12px", ring: 22, stroke: 2, icon: "size-3", showName: true },
 };
 
 const RING_CIRC = 2 * Math.PI * 10;
@@ -653,8 +653,8 @@ function RotateCcw({ spinning }: { spinning: boolean }) {
       aria-hidden="true"
       className={`size-3.5 ${spinning ? "animate-spin" : ""}`}
     >
-      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
-      <path d="M3 3v5h5" />
+      <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8" />
+      <path d="M21 3v5h-5" />
     </svg>
   );
 }
