@@ -551,11 +551,27 @@ const Chip = memo(function Chip({
       >
       <UsageRing left={left} color={color} size={scale.ring} stroke={scale.stroke}>
         {cfg.iconMode === "icon" && (
-          <ProviderIcon
-            providerKind="agent"
-            provider={provider.provider}
-            className={scale.icon}
-          />
+          <span
+            className="grid place-items-center"
+            style={
+              cfg.colorMode === "monochrome"
+                ? {
+                    color: "var(--muted-foreground, #a1a1aa)",
+                    filter: "grayscale(1)",
+                  }
+                : undefined
+            }
+          >
+            <ProviderIcon
+              providerKind="agent"
+              provider={
+                cfg.colorMode === "monochrome"
+                  ? { ...provider.provider, strings: null }
+                  : provider.provider
+              }
+              className={scale.icon}
+            />
+          </span>
         )}
         {cfg.iconMode === "dot" && (
           <span
