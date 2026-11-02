@@ -291,11 +291,11 @@ const ProviderRows = memo(function ProviderRows({
           return (
             <div
               key={window.label}
-              className="flex justify-between pl-[18px]"
+              className="flex items-start justify-between pl-[18px]"
               style={{ color: tone(left) }}
             >
-              <span>{window.label}</span>
-              <span>
+              <span className="min-w-0 flex-1 pr-3">{window.label}</span>
+              <span className="shrink-0 whitespace-nowrap text-right">
                 {left}% left
                 {window.resetsAt ? ` · ${countdown(window.resetsAt)}` : ""}
               </span>
@@ -474,111 +474,6 @@ function useWriteSetting() {
   return { set, saving };
 }
 
-function Switch({
-  checked,
-  onCheckedChange,
-  disabled,
-}: {
-  checked: boolean;
-  onCheckedChange: (checked: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onCheckedChange(!checked)}
-      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200 ${
-        checked ? "bg-primary" : "bg-muted-foreground/30"
-      } ${disabled ? "cursor-default opacity-50" : "cursor-pointer"}`}
-    >
-      <span
-        className={`absolute top-0.5 size-4 rounded-full bg-white shadow transition-transform duration-200 ${
-          checked ? "translate-x-[18px]" : "translate-x-0.5"
-        }`}
-      />
-    </button>
-  );
-}
-
-function Segmented<T extends string>({
-  options,
-  value,
-  onChange,
-  disabled,
-}: {
-  options: readonly { value: T; label: string }[];
-  value: T;
-  onChange: (value: T) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <div
-      className={`inline-flex gap-0.5 rounded-lg bg-muted p-0.5 ${
-        disabled ? "pointer-events-none opacity-50" : ""
-      }`}
-    >
-      {options.map((option) => {
-        const active = option.value === value;
-        return (
-          <button
-            key={option.value}
-            disabled={disabled}
-            onClick={() => onChange(option.value)}
-            className={`rounded-md px-2.5 py-1 text-2xs font-medium transition-colors ${
-              active
-                ? "bg-background text-foreground shadow-sm"
-                : "text-muted-foreground hover:text-foreground"
-            }`}
-          >
-            {option.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function Field({
-  label,
-  hint,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-4 px-4 py-2.5">
-      <div className="min-w-0">
-        <div className="text-xs font-medium">{label}</div>
-        {hint && <div className="mt-0.5 text-2xs text-muted-foreground">{hint}</div>}
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
-  );
-}
-
-function Group({
-  title,
-  children,
-}: {
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <p className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-        {title}
-      </p>
-      <div className="divide-y divide-border/60 rounded-xl border border-border bg-card/40">
-        {children}
-      </div>
-    </div>
-  );
-}
-
 /** WYSIWYG preview: a miniature bb window; the mock pill sits at the
  * configured anchor and glides when it changes. Clicking a zone moves it. */
 function PositionPreview({
@@ -670,89 +565,33 @@ function UsagePillSettings(_props: PluginSettingsSectionProps) {
   const config = useOverlayConfig();
   const { set, saving } = useWriteSetting();
   const disabled = !config.enabled;
+  const summary = `${config.position} · ${config.orientation} · ${config.size} · ${
+    config.minutes <= 0 ? "manual refresh" : `every ${config.minutes}m`
+  }`;
 
   return (
-    <section className="space-y-4">
-      <div className="flex items-center justify-between rounded-xl border border-border bg-card/40 px-4 py-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">Show usage pill</p>
-          <p className="mt-0.5 text-2xs text-muted-foreground">
-            Floating quota chips over the bb window.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {saving && (
-            <span className="size-1.5 animate-pulse rounded-full bg-primary" />
-          )}
-          <Switch
-            checked={config.enabled}
-            onCheckedChange={(value) => void set("overlayEnabled", value)}
-          />
-        </div>
+    <section className="space-y-3">
+      <div className="flex items-center justify-between px-1">
+        <p className="text-2xs text-muted-foreground">
+          Click a zone to move the pill. Interval, orientation and size are
+          configured above.
+        </p>
+        {saving && (
+          <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
+        )}
       </div>
-
-      <Group title="Position">
-        <div className="flex items-center justify-between gap-4 px-4 pt-3">
-          <div className="text-xs font-medium">Placement</div>
-          <div className="text-2xs text-muted-foreground">
-            Click a zone in the preview — the pill glides there.
-          </div>
-        </div>
-        <div className={disabled ? "pointer-events-none opacity-50" : ""}>
+      <div className="overflow-hidden rounded-xl border border-border bg-card/40">
+        <div className={disabled ? "pointer-events-none opacity-40" : ""}>
           <PositionPreview
             config={config}
             onPick={(position) => void set("overlayPosition", position)}
           />
         </div>
-      </Group>
-
-      <Group title="Appearance">
-        <Field label="Orientation" hint="Chips side by side or stacked.">
-          <Segmented
-            disabled={disabled}
-            options={ORIENTATIONS.map((orientation) => ({
-              value: orientation,
-              label:
-                orientation === "horizontal" ? "Horizontal" : "Vertical",
-            }))}
-            value={config.orientation}
-            onChange={(value) => void set("overlayOrientation", value)}
-          />
-        </Field>
-        <Field label="Size" hint="Compact, comfortable or large chips.">
-          <Segmented
-            disabled={disabled}
-            options={SIZES.map((size) => ({
-              value: size,
-              label: size[0].toUpperCase() + size.slice(1),
-            }))}
-            value={config.size}
-            onChange={(value) => void set("overlaySize", value)}
-          />
-        </Field>
-      </Group>
-
-      <Group title="Refresh">
-        <Field
-          label="Interval"
-          hint="Polling pauses while bb is minimized."
-        >
-          <Segmented
-            disabled={disabled}
-            options={[
-              { value: "0", label: "Manual" },
-              { value: "2", label: "2m" },
-              { value: "5", label: "5m" },
-              { value: "15", label: "15m" },
-              { value: "30", label: "30m" },
-            ]}
-            value={String(config.minutes)}
-            onChange={(value) =>
-              void set("overlayRefreshMinutes", Number(value))
-            }
-          />
-        </Field>
-      </Group>
+        <div className="border-t border-border/60 px-4 py-2 text-2xs text-muted-foreground">
+          {summary}
+          {disabled ? " · pill disabled" : ""}
+        </div>
+      </div>
     </section>
   );
 }
@@ -761,9 +600,9 @@ export default definePluginApp((app) => {
   app.slots.experimental_appOverlay({ id: "usage-pill", component: UsagePill });
   app.slots.settingsSection({
     id: "usage-pill",
-    title: "Usage pill overlay",
+    title: "Usage pill preview",
     description:
-      "Position, size, orientation and refresh cadence of the floating quota pill.",
+      "Live preview of the floating quota pill — click a zone to move it.",
     component: UsagePillSettings,
   });
 });

@@ -34,22 +34,45 @@ export default async function plugin(bb: BbPluginApi) {
       default: 2,
     },
     overlayPosition: {
-      type: "string",
+      type: "select",
       label: "Usage pill position",
-      description:
-        "One of top-left, top-center, top-right, bottom-left, bottom-center, bottom-right.",
+      options: [
+        "top-left",
+        "top-center",
+        "top-right",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right",
+      ],
+      experimental_optionLabels: {
+        "top-left": "Top left",
+        "top-center": "Top center",
+        "top-right": "Top right",
+        "bottom-left": "Bottom left",
+        "bottom-center": "Bottom center",
+        "bottom-right": "Bottom right",
+      },
       default: "bottom-right",
     },
     overlayOrientation: {
-      type: "string",
+      type: "select",
       label: "Usage pill orientation",
-      description: "horizontal or vertical.",
+      options: ["horizontal", "vertical"],
+      experimental_optionLabels: {
+        horizontal: "Horizontal",
+        vertical: "Vertical",
+      },
       default: "horizontal",
     },
     overlaySize: {
-      type: "string",
+      type: "select",
       label: "Usage pill size",
-      description: "compact, comfortable or large.",
+      options: ["compact", "comfortable", "large"],
+      experimental_optionLabels: {
+        compact: "Compact",
+        comfortable: "Comfortable",
+        large: "Large (shows provider names)",
+      },
       default: "comfortable",
     },
   });
