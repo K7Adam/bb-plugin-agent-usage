@@ -1006,7 +1006,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       )}
       <button
         onClick={() => setOpen((value) => !value)}
-        title="Provider usage"
+        aria-label="Provider usage"
         className={`flex items-center border border-border/70 shadow-md backdrop-blur-xl ${
           config.orientation === "vertical" ? "rounded-2xl" : "rounded-full"
         }`}
