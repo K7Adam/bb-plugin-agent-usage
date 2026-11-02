@@ -2,7 +2,7 @@
 // (Devin, Antigravity and everything else), refreshed on a configurable
 // interval. Click opens a popup with every limit window and a refresh
 // button. Position, orientation, size and cadence are plugin settings,
-// editable in a dedicated settings section.
+// edited in a settings section with a live, interactive preview.
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   definePluginApp,
@@ -171,7 +171,8 @@ function pick<T extends string>(
   allowed: readonly T[],
   fallback: T,
 ): T {
-  return typeof value === "string" && (allowed as readonly string[]).includes(value)
+  return typeof value === "string" &&
+    (allowed as readonly string[]).includes(value)
     ? (value as T)
     : fallback;
 }
@@ -220,11 +221,6 @@ function popupStyle(position: Position): React.CSSProperties {
     width: 300,
     maxHeight: "60vh",
     overflowY: "auto",
-    background: "var(--popover, var(--card, #18181b))",
-    border: "1px solid var(--border, #3f3f46)",
-    borderRadius: 10,
-    padding: "10px 12px",
-    boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
     zIndex: 1001,
   };
   if (position.startsWith("top")) style.top = "calc(100% + 8px)";
@@ -251,13 +247,8 @@ const Chip = memo(function Chip({
   const left = remaining(window);
   return (
     <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 4,
-        color: tone(left),
-        whiteSpace: "nowrap",
-      }}
+      className="inline-flex items-center whitespace-nowrap"
+      style={{ gap: 4, color: tone(left) }}
       title={`${provider.displayName} · ${window.label}: ${left}% left${
         window.resetsAt ? ` · resets in ${countdown(window.resetsAt)}` : ""
       }`}
@@ -279,30 +270,17 @@ const ProviderRows = memo(function ProviderRows({
   provider: ProviderEntry;
 }) {
   return (
-    <div style={{ marginBottom: 8 }}>
-      <div
-        style={{ display: "flex", alignItems: "center", gap: 6, fontWeight: 600 }}
-      >
+    <div className="mb-2 last:mb-0">
+      <div className="flex items-center gap-1.5 font-semibold">
         <ProviderIcon providerKind="agent" provider={provider.provider} />
         <span>{provider.displayName}</span>
         {provider.planLabel && (
-          <span
-            style={{
-              color: "var(--muted-foreground, #a1a1aa)",
-              fontWeight: 400,
-            }}
-          >
+          <span className="font-normal text-muted-foreground">
             {provider.planLabel}
           </span>
         )}
         {provider.hostName && (
-          <span
-            style={{
-              marginLeft: "auto",
-              color: "var(--muted-foreground, #a1a1aa)",
-              fontWeight: 400,
-            }}
-          >
+          <span className="ml-auto font-normal text-muted-foreground">
             {provider.hostName}
           </span>
         )}
@@ -313,12 +291,8 @@ const ProviderRows = memo(function ProviderRows({
           return (
             <div
               key={window.label}
-              style={{
-                display: "flex",
-                justifyContent: "space-between",
-                paddingLeft: 18,
-                color: tone(left),
-              }}
+              className="flex justify-between pl-[18px]"
+              style={{ color: tone(left) }}
             >
               <span>{window.label}</span>
               <span>
@@ -329,12 +303,7 @@ const ProviderRows = memo(function ProviderRows({
           );
         })
       ) : (
-        <div
-          style={{
-            paddingLeft: 18,
-            color: "var(--muted-foreground, #a1a1aa)",
-          }}
-        >
+        <div className="pl-[18px] text-muted-foreground">
           {provider.message ?? provider.status}
         </div>
       )}
@@ -416,13 +385,8 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
 
   return (
     <div
-      style={{
-        ...positionStyle(config.position),
-        fontFamily: "inherit",
-        fontSize: scale.font,
-        lineHeight: 1.4,
-        color: "var(--foreground, #e4e4e7)",
-      }}
+      className="text-foreground"
+      style={{ ...positionStyle(config.position), fontSize: scale.font }}
     >
       {open && (
         <div
@@ -431,27 +395,17 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
         />
       )}
       {open && (
-        <div style={popupStyle(config.position)} role="dialog">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: 8,
-            }}
-          >
+        <div
+          role="dialog"
+          className="rounded-[10px] border border-border bg-popover p-3 shadow-xl"
+          style={popupStyle(config.position)}
+        >
+          <div className="mb-2 flex items-center justify-between">
             <strong>Usage</strong>
             <button
               onClick={() => void refresh()}
-              style={{
-                fontSize: scale.font,
-                padding: "2px 8px",
-                borderRadius: 6,
-                border: "1px solid var(--border, #3f3f46)",
-                background: "transparent",
-                color: "inherit",
-                cursor: "pointer",
-              }}
+              className="rounded-md border border-border px-2 py-0.5 transition-colors hover:bg-muted"
+              style={{ fontSize: scale.font }}
             >
               {loading ? "…" : "Refresh"}
             </button>
@@ -460,16 +414,11 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
             <ProviderRows key={provider.key} provider={provider} />
           ))}
           {snapshot?.error && (
-            <div style={{ color: "var(--destructive, #ef4444)" }}>
-              {snapshot.error}
-            </div>
+            <div className="text-destructive">{snapshot.error}</div>
           )}
           <div
-            style={{
-              marginTop: 6,
-              color: "var(--muted-foreground, #a1a1aa)",
-              fontSize: scale.font - 1,
-            }}
+            className="mt-1.5 text-muted-foreground"
+            style={{ fontSize: scale.font - 1 }}
           >
             {snapshot ? `Updated ${ago(snapshot.fetchedAt)}` : "Loading…"}
             {config.minutes <= 0
@@ -481,18 +430,13 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       <button
         onClick={() => setOpen((value) => !value)}
         title="Provider usage"
+        className="flex items-center rounded-full border border-border shadow-lg backdrop-blur-md"
         style={{
-          display: "flex",
           flexDirection: config.orientation === "vertical" ? "column" : "row",
-          alignItems: "center",
           gap: scale.gap,
           padding: scale.pad,
-          borderRadius: 999,
-          border: "1px solid var(--border, #3f3f46)",
           background:
             "color-mix(in srgb, var(--popover, #18181b) 88%, transparent)",
-          backdropFilter: "blur(8px)",
-          boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
           color: "inherit",
           cursor: "pointer",
           fontSize: scale.font,
@@ -512,16 +456,51 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
 
 // ---------- settings section ----------
 
-const SETTING_LABEL = {
-  fontSize: 12,
-  fontWeight: 600,
-  color: "var(--foreground, #e4e4e7)",
-} satisfies React.CSSProperties;
+function useWriteSetting() {
+  const sdk = useSdk();
+  const pluginId = experimental_usePluginId();
+  const [saving, setSaving] = useState(false);
+  const set = useCallback(
+    async (key: string, value: string | number | boolean) => {
+      setSaving(true);
+      try {
+        await sdk.plugins.updateSettings({ pluginId, values: { [key]: value } });
+      } finally {
+        setSaving(false);
+      }
+    },
+    [sdk, pluginId],
+  );
+  return { set, saving };
+}
 
-const SETTING_HINT = {
-  fontSize: 11,
-  color: "var(--muted-foreground, #a1a1aa)",
-} satisfies React.CSSProperties;
+function Switch({
+  checked,
+  onCheckedChange,
+  disabled,
+}: {
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onCheckedChange(!checked)}
+      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors duration-200 ${
+        checked ? "bg-primary" : "bg-muted-foreground/30"
+      } ${disabled ? "cursor-default opacity-50" : "cursor-pointer"}`}
+    >
+      <span
+        className={`absolute top-0.5 size-4 rounded-full bg-white shadow transition-transform duration-200 ${
+          checked ? "translate-x-[18px]" : "translate-x-0.5"
+        }`}
+      />
+    </button>
+  );
+}
 
 function Segmented<T extends string>({
   options,
@@ -536,15 +515,9 @@ function Segmented<T extends string>({
 }) {
   return (
     <div
-      style={{
-        display: "inline-flex",
-        gap: 2,
-        padding: 2,
-        borderRadius: 8,
-        border: "1px solid var(--border, #3f3f46)",
-        background: "var(--muted, rgba(255,255,255,0.04))",
-        opacity: disabled ? 0.5 : 1,
-      }}
+      className={`inline-flex gap-0.5 rounded-lg bg-muted p-0.5 ${
+        disabled ? "pointer-events-none opacity-50" : ""
+      }`}
     >
       {options.map((option) => {
         const active = option.value === value;
@@ -553,15 +526,11 @@ function Segmented<T extends string>({
             key={option.value}
             disabled={disabled}
             onClick={() => onChange(option.value)}
-            style={{
-              fontSize: 11,
-              padding: "3px 10px",
-              borderRadius: 6,
-              border: "none",
-              cursor: disabled ? "default" : "pointer",
-              background: active ? "var(--primary, #3b82f6)" : "transparent",
-              color: active ? "var(--primary-foreground, #fff)" : "inherit",
-            }}
+            className={`rounded-md px-2.5 py-1 text-2xs font-medium transition-colors ${
+              active
+                ? "bg-background text-foreground shadow-sm"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
           >
             {option.label}
           </button>
@@ -571,7 +540,7 @@ function Segmented<T extends string>({
   );
 }
 
-function SettingRow({
+function Field({
   label,
   hint,
   children,
@@ -581,133 +550,210 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 16,
-        padding: "8px 0",
-      }}
-    >
-      <div>
-        <div style={SETTING_LABEL}>{label}</div>
-        {hint && <div style={SETTING_HINT}>{hint}</div>}
+    <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+      <div className="min-w-0">
+        <div className="text-xs font-medium">{label}</div>
+        {hint && <div className="mt-0.5 text-2xs text-muted-foreground">{hint}</div>}
       </div>
-      {children}
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function Group({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <p className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+        {title}
+      </p>
+      <div className="divide-y divide-border/60 rounded-xl border border-border bg-card/40">
+        {children}
+      </div>
+    </div>
+  );
+}
+
+/** WYSIWYG preview: a miniature bb window; the mock pill sits at the
+ * configured anchor and glides when it changes. Clicking a zone moves it. */
+function PositionPreview({
+  config,
+  onPick,
+}: {
+  config: OverlayConfig;
+  onPick: (position: Position) => void;
+}) {
+  const scale = SCALE[config.size];
+  const anchor: Record<Position, React.CSSProperties> = {
+    "top-left": { top: "10%", left: "6%" },
+    "top-center": { top: "10%", left: "50%", transform: "translateX(-50%)" },
+    "top-right": { top: "10%", left: "94%", transform: "translateX(-100%)" },
+    "bottom-left": { top: "90%", left: "6%", transform: "translateY(-100%)" },
+    "bottom-center": {
+      top: "90%",
+      left: "50%",
+      transform: "translate(-50%,-100%)",
+    },
+    "bottom-right": {
+      top: "90%",
+      left: "94%",
+      transform: "translate(-100%,-100%)",
+    },
+  };
+  const hotspot: Record<Position, React.CSSProperties> = {
+    "top-left": { top: 0, left: 0, width: "34%", height: "50%" },
+    "top-center": { top: 0, left: "33%", width: "34%", height: "50%" },
+    "top-right": { top: 0, right: 0, width: "34%", height: "50%" },
+    "bottom-left": { bottom: 0, left: 0, width: "34%", height: "50%" },
+    "bottom-center": { bottom: 0, left: "33%", width: "34%", height: "50%" },
+    "bottom-right": { bottom: 0, right: 0, width: "34%", height: "50%" },
+  };
+  const mockChips = ["#D97757", "#10a37f", "#8b5cf6"];
+  return (
+    <div className="relative h-44 overflow-hidden rounded-b-xl bg-muted/20">
+      {/* fake window chrome */}
+      <div className="absolute left-0 top-0 h-full w-9 border-r border-border/60 bg-muted/30" />
+      <div className="absolute left-12 right-3 top-3 space-y-1.5">
+        <div className="h-1.5 w-3/4 rounded-full bg-muted-foreground/20" />
+        <div className="h-1.5 w-1/2 rounded-full bg-muted-foreground/15" />
+        <div className="h-1.5 w-2/3 rounded-full bg-muted-foreground/10" />
+      </div>
+      {/* hotspots */}
+      {POSITIONS.map((position) => (
+        <button
+          key={position}
+          title={position}
+          onClick={() => onPick(position)}
+          className="absolute z-10 rounded-md transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
+          style={hotspot[position]}
+        />
+      ))}
+      {/* the mock pill */}
+      <div
+        className="absolute z-20 transition-all duration-300 ease-out"
+        style={anchor[config.position]}
+      >
+        <div
+          className="flex items-center rounded-full border border-border bg-popover/90 shadow-md backdrop-blur-sm"
+          style={{
+            flexDirection:
+              config.orientation === "vertical" ? "column" : "row",
+            gap: scale.gap,
+            padding: scale.pad,
+            fontSize: scale.font,
+          }}
+        >
+          {mockChips.map((color, index) => (
+            <span
+              key={index}
+              className="inline-flex items-center gap-1 whitespace-nowrap"
+            >
+              <span
+                className="inline-block size-2.5 rounded-full"
+                style={{ background: color }}
+              />
+              {[87, 42, 99][index]}%
+            </span>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
 
 function UsagePillSettings(_props: PluginSettingsSectionProps) {
-  const sdk = useSdk();
-  const pluginId = experimental_usePluginId();
   const config = useOverlayConfig();
-  const [saving, setSaving] = useState(false);
-
-  const set = useCallback(
-    async (key: string, value: string | number | boolean) => {
-      setSaving(true);
-      try {
-        await sdk.plugins.updateSettings({
-          pluginId,
-          values: { [key]: value },
-        });
-      } finally {
-        setSaving(false);
-      }
-    },
-    [sdk, pluginId],
-  );
+  const { set, saving } = useWriteSetting();
+  const disabled = !config.enabled;
 
   return (
-    <div>
-      <SettingRow label="Show usage pill" hint="Floating quota chips over the bb window.">
-        <Segmented
-          options={[
-            { value: "on", label: "On" },
-            { value: "off", label: "Off" },
-          ]}
-          value={config.enabled ? "on" : "off"}
-          onChange={(value) => void set("overlayEnabled", value === "on")}
-        />
-      </SettingRow>
-      <SettingRow
-        label="Refresh interval"
-        hint="Background polling is skipped while bb is minimized. 0 = manual only."
-      >
-        <Segmented
-          disabled={!config.enabled}
-          options={[
-            { value: "0", label: "Manual" },
-            { value: "2", label: "2m" },
-            { value: "5", label: "5m" },
-            { value: "15", label: "15m" },
-            { value: "30", label: "30m" },
-          ]}
-          value={String(config.minutes)}
-          onChange={(value) => void set("overlayRefreshMinutes", Number(value))}
-        />
-      </SettingRow>
-      <SettingRow label="Position" hint="Corner or edge center of the bb window.">
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, 34px)",
-            gap: 4,
-            opacity: config.enabled ? 1 : 0.5,
-          }}
-        >
-          {POSITIONS.map((position) => {
-            const active = position === config.position;
-            return (
-              <button
-                key={position}
-                disabled={!config.enabled}
-                title={position}
-                onClick={() => void set("overlayPosition", position)}
-                style={{
-                  height: 24,
-                  borderRadius: 5,
-                  border: `1px solid ${
-                    active
-                      ? "var(--primary, #3b82f6)"
-                      : "var(--border, #3f3f46)"
-                  }`,
-                  background: active
-                    ? "var(--primary, #3b82f6)"
-                    : "transparent",
-                  cursor: config.enabled ? "pointer" : "default",
-                }}
-              />
-            );
-          })}
+    <section className="space-y-4">
+      <div className="flex items-center justify-between rounded-xl border border-border bg-card/40 px-4 py-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium">Show usage pill</p>
+          <p className="mt-0.5 text-2xs text-muted-foreground">
+            Floating quota chips over the bb window.
+          </p>
         </div>
-      </SettingRow>
-      <SettingRow label="Orientation" hint="Lay chips side by side or stacked.">
-        <Segmented
-          disabled={!config.enabled}
-          options={ORIENTATIONS.map((orientation) => ({
-            value: orientation,
-            label: orientation === "horizontal" ? "Horizontal" : "Vertical",
-          }))}
-          value={config.orientation}
-          onChange={(value) => void set("overlayOrientation", value)}
-        />
-      </SettingRow>
-      <SettingRow label="Size" hint="Compact, comfortable or large chips.">
-        <Segmented
-          disabled={!config.enabled}
-          options={SIZES.map((size) => ({
-            value: size,
-            label: size[0].toUpperCase() + size.slice(1),
-          }))}
-          value={config.size}
-          onChange={(value) => void set("overlaySize", value)}
-        />
-      </SettingRow>
-      {saving && <div style={SETTING_HINT}>Saving…</div>}
-    </div>
+        <div className="flex items-center gap-2">
+          {saving && (
+            <span className="size-1.5 animate-pulse rounded-full bg-primary" />
+          )}
+          <Switch
+            checked={config.enabled}
+            onCheckedChange={(value) => void set("overlayEnabled", value)}
+          />
+        </div>
+      </div>
+
+      <Group title="Position">
+        <div className="flex items-center justify-between gap-4 px-4 pt-3">
+          <div className="text-xs font-medium">Placement</div>
+          <div className="text-2xs text-muted-foreground">
+            Click a zone in the preview — the pill glides there.
+          </div>
+        </div>
+        <div className={disabled ? "pointer-events-none opacity-50" : ""}>
+          <PositionPreview
+            config={config}
+            onPick={(position) => void set("overlayPosition", position)}
+          />
+        </div>
+      </Group>
+
+      <Group title="Appearance">
+        <Field label="Orientation" hint="Chips side by side or stacked.">
+          <Segmented
+            disabled={disabled}
+            options={ORIENTATIONS.map((orientation) => ({
+              value: orientation,
+              label:
+                orientation === "horizontal" ? "Horizontal" : "Vertical",
+            }))}
+            value={config.orientation}
+            onChange={(value) => void set("overlayOrientation", value)}
+          />
+        </Field>
+        <Field label="Size" hint="Compact, comfortable or large chips.">
+          <Segmented
+            disabled={disabled}
+            options={SIZES.map((size) => ({
+              value: size,
+              label: size[0].toUpperCase() + size.slice(1),
+            }))}
+            value={config.size}
+            onChange={(value) => void set("overlaySize", value)}
+          />
+        </Field>
+      </Group>
+
+      <Group title="Refresh">
+        <Field
+          label="Interval"
+          hint="Polling pauses while bb is minimized."
+        >
+          <Segmented
+            disabled={disabled}
+            options={[
+              { value: "0", label: "Manual" },
+              { value: "2", label: "2m" },
+              { value: "5", label: "5m" },
+              { value: "15", label: "15m" },
+              { value: "30", label: "30m" },
+            ]}
+            value={String(config.minutes)}
+            onChange={(value) =>
+              void set("overlayRefreshMinutes", Number(value))
+            }
+          />
+        </Field>
+      </Group>
+    </section>
   );
 }
 
@@ -716,7 +762,8 @@ export default definePluginApp((app) => {
   app.slots.settingsSection({
     id: "usage-pill",
     title: "Usage pill overlay",
-    description: "Position, size, orientation and refresh cadence of the floating quota pill.",
+    description:
+      "Position, size, orientation and refresh cadence of the floating quota pill.",
     component: UsagePillSettings,
   });
 });
