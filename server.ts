@@ -75,6 +75,86 @@ export default async function plugin(bb: BbPluginApi) {
       },
       default: "comfortable",
     },
+    overlayColorMode: {
+      type: "select",
+      label: "Usage pill color mode",
+      description:
+        "adaptive: rings always use warning colors · monochrome: neutral rings · severity: neutral until a window drops below the warn threshold.",
+      options: ["adaptive", "monochrome", "severity"],
+      experimental_optionLabels: {
+        adaptive: "Adaptive (warning colors)",
+        monochrome: "Monochrome",
+        severity: "Severity only",
+      },
+      default: "adaptive",
+    },
+    overlayIconMode: {
+      type: "select",
+      label: "Usage pill chip content",
+      description: "What sits inside each usage ring.",
+      options: ["icon", "dot", "none"],
+      experimental_optionLabels: {
+        icon: "Provider icon",
+        dot: "Colored dot",
+        none: "Bare ring",
+      },
+      default: "icon",
+    },
+    overlayShowPercent: {
+      type: "boolean",
+      label: "Show percent next to rings",
+      description: "Display the remaining quota as a number beside each ring.",
+      default: false,
+    },
+    overlayHeadline: {
+      type: "select",
+      label: "Usage pill headline window",
+      description: "Which limit window drives each chip.",
+      options: ["weekly", "tightest", "first"],
+      experimental_optionLabels: {
+        weekly: "Weekly window (or first)",
+        tightest: "Tightest window",
+        first: "First window",
+      },
+      default: "weekly",
+    },
+    overlayWarnBelow: {
+      type: "number",
+      label: "Warn below (% remaining)",
+      description: "Windows at or below this show amber.",
+      default: 20,
+    },
+    overlayCritBelow: {
+      type: "number",
+      label: "Critical below (% remaining)",
+      description: "Windows at or below this show red and can pulse.",
+      default: 5,
+    },
+    overlayOpacity: {
+      type: "select",
+      label: "Usage pill opacity",
+      options: ["100", "85", "70", "55"],
+      experimental_optionLabels: {
+        "100": "Solid (100%)",
+        "85": "85%",
+        "70": "70%",
+        "55": "Ghost (55%)",
+      },
+      default: "100",
+    },
+    overlayPulseCritical: {
+      type: "boolean",
+      label: "Pulse critical chips",
+      description: "Chips at or below the critical threshold pulse gently.",
+      default: false,
+    },
+    overlayProviders: {
+      type: "string",
+      label: "Providers shown in the pill",
+      description:
+        "Comma-separated provider ids to show; empty shows every provider that reports usage.",
+      default: "",
+    },
   });
   const { devinCommand, antigravityCommand } = await settings.get();
 

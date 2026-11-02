@@ -54,7 +54,21 @@ function remaining(window: UsageWindow): number {
   return Math.max(0, Math.min(100, Math.round(100 - window.usedPercent)));
 }
 
-function headline(provider: ProviderEntry): UsageWindow | null {
+const HEADLINES = ["weekly", "tightest", "first"] as const;
+type Headline = (typeof HEADLINES)[number];
+
+function headline(
+  provider: ProviderEntry,
+  mode: Headline = "weekly",
+): UsageWindow | null {
+  if (mode === "first") return provider.windows[0] ?? null;
+  if (mode === "tightest") {
+    let best: UsageWindow | null = null;
+    for (const window of provider.windows) {
+      if (best === null || remaining(window) < remaining(best)) best = window;
+    }
+    return best;
+  }
   return (
     provider.windows.find((window) => WEEKLY.test(window.label)) ??
     provider.windows[0] ??
@@ -62,10 +76,24 @@ function headline(provider: ProviderEntry): UsageWindow | null {
   );
 }
 
-function tone(left: number): string {
-  if (left <= 5) return "var(--destructive, #ef4444)";
-  if (left <= 20) return "#f59e0b";
-  return "var(--foreground, #e4e4e7)";
+const COLOR_MODES = ["adaptive", "monochrome", "severity"] as const;
+type ColorMode = (typeof COLOR_MODES)[number];
+
+function tone(
+  left: number,
+  cfg: {
+    colorMode: ColorMode;
+    warnBelow: number;
+    critBelow: number;
+  },
+): string {
+  if (cfg.colorMode === "monochrome")
+    return "var(--foreground, #e4e4e7)";
+  if (left <= cfg.critBelow) return "var(--destructive, #ef4444)";
+  if (left <= cfg.warnBelow) return "#f59e0b";
+  return cfg.colorMode === "adaptive"
+    ? "#34d399"
+    : "var(--foreground, #e4e4e7)";
 }
 
 function countdown(resetsAt: string | null): string {
@@ -158,12 +186,24 @@ type Orientation = (typeof ORIENTATIONS)[number];
 const SIZES = ["compact", "comfortable", "large"] as const;
 type Size = (typeof SIZES)[number];
 
+const ICON_MODES = ["icon", "dot", "none"] as const;
+type IconMode = (typeof ICON_MODES)[number];
+
 interface OverlayConfig {
   enabled: boolean;
   minutes: number;
   position: Position;
   orientation: Orientation;
   size: Size;
+  colorMode: ColorMode;
+  iconMode: IconMode;
+  showPercent: boolean;
+  headlineMode: Headline;
+  warnBelow: number;
+  critBelow: number;
+  opacity: number;
+  providers: ReadonlySet<string> | null;
+  pulseCritical: boolean;
 }
 
 function pick<T extends string>(
@@ -179,12 +219,25 @@ function pick<T extends string>(
 
 function useOverlayConfig(): OverlayConfig {
   const { values } = useSettings();
+  const csv =
+    typeof values?.overlayProviders === "string"
+      ? values.overlayProviders.trim()
+      : "";
   return {
     enabled: values?.overlayEnabled !== false,
     minutes: Math.max(0, Number(values?.overlayRefreshMinutes ?? 2) || 0),
     position: pick(values?.overlayPosition, POSITIONS, "bottom-right"),
     orientation: pick(values?.overlayOrientation, ORIENTATIONS, "horizontal"),
     size: pick(values?.overlaySize, SIZES, "comfortable"),
+    colorMode: pick(values?.overlayColorMode, COLOR_MODES, "adaptive"),
+    iconMode: pick(values?.overlayIconMode, ICON_MODES, "icon"),
+    showPercent: values?.overlayShowPercent === true,
+    headlineMode: pick(values?.overlayHeadline, HEADLINES, "weekly"),
+    warnBelow: Number(values?.overlayWarnBelow ?? 20) || 20,
+    critBelow: Number(values?.overlayCritBelow ?? 5) || 5,
+    opacity: Math.min(100, Math.max(20, Number(values?.overlayOpacity ?? 100) || 100)),
+    providers: csv === "" ? null : new Set(csv.split(",").map((id) => id.trim()).filter(Boolean)),
+    pulseCritical: values?.overlayPulseCritical === true,
   };
 }
 
@@ -297,32 +350,46 @@ function popupStyle(position: Position): React.CSSProperties {
 const Chip = memo(function Chip({
   provider,
   scale,
+  cfg,
 }: {
   provider: ProviderEntry;
   scale: (typeof SCALE)[Size];
+  cfg: OverlayConfig;
 }) {
-  const window = headline(provider);
+  const window = headline(provider, cfg.headlineMode);
   if (window === null) return null;
   const left = remaining(window);
+  const color = tone(left, cfg);
+  const critical = cfg.pulseCritical && left <= cfg.critBelow;
   return (
     <span
-      className="inline-flex items-center gap-1 whitespace-nowrap rounded-full p-0.5 transition-colors hover:bg-muted/60"
+      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full p-0.5 transition-colors hover:bg-muted/60 ${
+        critical ? "animate-pulse" : ""
+      }`}
       title={`${provider.displayName} · ${window.label}: ${left}% left${
         window.resetsAt ? ` · resets in ${countdown(window.resetsAt)}` : ""
       }`}
     >
-      <UsageRing left={left} color={tone(left)} size={scale.ring} stroke={scale.stroke}>
-        <ProviderIcon
-          providerKind="agent"
-          provider={provider.provider}
-          className={scale.icon}
-        />
+      <UsageRing left={left} color={color} size={scale.ring} stroke={scale.stroke}>
+        {cfg.iconMode === "icon" && (
+          <ProviderIcon
+            providerKind="agent"
+            provider={provider.provider}
+            className={scale.icon}
+          />
+        )}
+        {cfg.iconMode === "dot" && (
+          <span
+            className="size-1 rounded-full"
+            style={{ background: color }}
+          />
+        )}
       </UsageRing>
       {scale.showName && (
         <span className="text-muted-foreground">{provider.displayName}</span>
       )}
-      {scale.showName && (
-        <span style={{ color: tone(left) }}>{left}%</span>
+      {(scale.showName || cfg.showPercent) && (
+        <span style={{ color }}>{left}%</span>
       )}
     </span>
   );
@@ -330,8 +397,10 @@ const Chip = memo(function Chip({
 
 const ProviderRows = memo(function ProviderRows({
   provider,
+  cfg,
 }: {
   provider: ProviderEntry;
+  cfg: OverlayConfig;
 }) {
   return (
     <div className="mb-2 last:mb-0">
@@ -364,12 +433,12 @@ const ProviderRows = memo(function ProviderRows({
                 <span className="h-1 w-14 overflow-hidden rounded-full bg-muted-foreground/20">
                   <span
                     className="block h-full rounded-full transition-[width] duration-500"
-                    style={{ width: `${left}%`, background: tone(left) }}
+                    style={{ width: `${left}%`, background: tone(left, cfg) }}
                   />
                 </span>
                 <span
                   className="w-7 text-right font-medium"
-                  style={{ color: tone(left) }}
+                  style={{ color: tone(left, cfg) }}
                 >
                   {left}%
                 </span>
@@ -458,7 +527,10 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
 
   const scale = SCALE[config.size];
   const chips = snapshot?.providers.filter(
-    (provider) => provider.status === "ok" && headline(provider) !== null,
+    (provider) =>
+      provider.status === "ok" &&
+      headline(provider, config.headlineMode) !== null &&
+      (config.providers === null || config.providers.has(provider.providerId)),
   );
 
   return (
@@ -499,7 +571,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
             </div>
           </div>
           {(snapshot?.providers ?? []).map((provider) => (
-            <ProviderRows key={provider.key} provider={provider} />
+            <ProviderRows key={provider.key} provider={provider} cfg={config} />
           ))}
           {snapshot?.error && (
             <div className="text-destructive">{snapshot.error}</div>
@@ -530,11 +602,17 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
           color: "inherit",
           cursor: "pointer",
           fontSize: scale.font,
+          opacity: config.opacity / 100,
         }}
       >
         {chips?.length ? (
           chips.map((provider) => (
-            <Chip key={provider.key} provider={provider} scale={scale} />
+            <Chip
+              key={provider.key}
+              provider={provider}
+              scale={scale}
+              cfg={config}
+            />
           ))
         ) : (
           <span>{loading ? "Usage …" : "Usage"}</span>
@@ -598,7 +676,8 @@ function PositionPreview({
     "bottom-center": { bottom: 0, left: "33%", width: "34%", height: "50%" },
     "bottom-right": { bottom: 0, right: 0, width: "34%", height: "50%" },
   };
-  const mockChips = ["#D97757", "#10a37f", "#8b5cf6"];
+  const mockLefts = [85, 15, 3];
+  const mockTints = ["#D97757", "#10a37f", "#8b5cf6"];
   return (
     <div className="relative h-44 overflow-hidden rounded-b-xl bg-muted/20">
       {/* fake window chrome */}
@@ -633,21 +712,150 @@ function PositionPreview({
             fontSize: scale.font,
           }}
         >
-          {mockChips.map((color, index) => (
-            <UsageRing
-              key={index}
-              left={[87, 42, 99][index]}
-              color={color}
-              size={scale.ring}
-              stroke={scale.stroke}
-            >
-              <span
-                className="size-1 rounded-full"
-                style={{ background: color }}
-              />
-            </UsageRing>
-          ))}
+          {mockLefts.map((left, index) => {
+            const color = tone(left, config);
+            return (
+              <span key={index} className="inline-flex items-center gap-1">
+                <UsageRing
+                  left={left}
+                  color={color}
+                  size={scale.ring}
+                  stroke={scale.stroke}
+                >
+                  {config.iconMode !== "none" && (
+                    <span
+                      className="size-1 rounded-full"
+                      style={{
+                        background:
+                          config.iconMode === "dot"
+                            ? color
+                            : mockTints[index],
+                      }}
+                    />
+                  )}
+                </UsageRing>
+                {config.showPercent && (
+                  <span style={{ color }}>{left}%</span>
+                )}
+              </span>
+            );
+          })}
         </div>
+      </div>
+    </div>
+  );
+}
+
+/** Toggle chips for every provider that reports usage — all on = empty list. */
+function ProviderFilter({
+  config,
+  onChange,
+}: {
+  config: OverlayConfig;
+  onChange: (csv: string) => void;
+}) {
+  const sdk = useSdk();
+  const [providers, setProviders] = useState<
+    | {
+        id: string;
+        displayName: string;
+        provider: ProviderEntry["provider"];
+      }[]
+    | null
+  >(null);
+
+  useEffect(() => {
+    let live = true;
+    void (async () => {
+      const found = new Map<
+        string,
+        { id: string; displayName: string; provider: ProviderEntry["provider"] }
+      >();
+      try {
+        const hosts = await sdk.hosts.list();
+        await Promise.all(
+          hosts
+            .filter((host) => host.status !== "disconnected")
+            .map(async (host) => {
+              try {
+                const list = await sdk.providers.list({
+                  hostId: host.id,
+                  capability: "usage",
+                });
+                for (const provider of list) {
+                  if (!found.has(provider.id)) {
+                    found.set(provider.id, {
+                      id: provider.id,
+                      displayName: provider.displayName,
+                      provider: {
+                        id: provider.id,
+                        logoUrl: provider.logoUrl,
+                        icon: provider.icon ?? null,
+                        strings: provider.strings ?? null,
+                      },
+                    });
+                  }
+                }
+              } catch {
+                // A host that cannot list providers contributes nothing.
+              }
+            }),
+        );
+      } catch {
+        // hosts.list failed; no filter UI.
+      }
+      if (live) {
+        setProviders(
+          [...found.values()].sort((a, b) =>
+            a.displayName.localeCompare(b.displayName),
+          ),
+        );
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [sdk]);
+
+  if (!providers?.length) return null;
+
+  const allIds = providers.map((provider) => provider.id);
+  const active = config.providers ?? new Set(allIds);
+
+  const toggle = (id: string) => {
+    const next = new Set(active);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange(next.size === allIds.length ? "" : [...next].join(","));
+  };
+
+  return (
+    <div>
+      <p className="mb-1.5 px-1 text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
+        Visible providers
+      </p>
+      <div className="flex flex-wrap gap-1.5 rounded-xl border border-border bg-card/40 p-3">
+        {providers.map((provider) => {
+          const on = active.has(provider.id);
+          return (
+            <button
+              key={provider.id}
+              onClick={() => toggle(provider.id)}
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-2xs font-medium transition-colors ${
+                on
+                  ? "border-primary/50 bg-primary/10 text-foreground"
+                  : "border-border text-muted-foreground opacity-60 hover:opacity-100"
+              }`}
+            >
+              <ProviderIcon
+                providerKind="agent"
+                provider={provider.provider}
+                className="size-3"
+              />
+              {provider.displayName}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -683,6 +891,12 @@ function UsagePillSettings(_props: PluginSettingsSectionProps) {
           {summary}
           {disabled ? " · pill disabled" : ""}
         </div>
+      </div>
+      <div className={disabled ? "pointer-events-none opacity-40" : ""}>
+        <ProviderFilter
+          config={config}
+          onChange={(csv) => void set("overlayProviders", csv)}
+        />
       </div>
     </section>
   );
