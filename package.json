@@ -19,7 +19,8 @@
       "icon": "./assets/icons/devin.svg"
     },
     "server": "./server.ts",
-    "host": "./src/host.ts"
+    "host": "./src/host.ts",
+    "app": "./app.tsx"
   },
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts",

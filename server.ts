@@ -19,6 +19,20 @@ export default async function plugin(bb: BbPluginApi) {
         "The Antigravity ACP server (agy_acp_server.exe on Windows, agy_acp_server.par elsewhere) from the ACP registry: a name on PATH or an absolute path.",
       default: "agy_acp_server",
     },
+    overlayEnabled: {
+      type: "boolean",
+      label: "Usage pill overlay",
+      description:
+        "Show a floating pill with the remaining plan quota of every provider that reports usage to bb.",
+      default: true,
+    },
+    overlayRefreshMinutes: {
+      type: "number",
+      label: "Usage pill refresh interval (minutes)",
+      description:
+        "How often the pill polls provider usage. 0 disables background polling; the popup's refresh button always works.",
+      default: 2,
+    },
   });
   const { devinCommand, antigravityCommand } = await settings.get();
 

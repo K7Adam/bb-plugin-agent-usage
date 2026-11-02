@@ -214,8 +214,10 @@ async function runUsageCommand(knownAgy: VerifiedAgy | null): Promise<{ result: 
 // last result is kept in a file (bridge processes exit when idle), a read
 // returns it while fresh, and otherwise waits a bounded time for a new read
 // that keeps running and fills the file for the next request.
-const FRESH_OK_MS = 4 * 60_000;
-const FRESH_OTHER_MS = 60_000;
+// Slightly below the overlay's default 2-minute poll so each pill refresh
+// actually re-reads agy instead of serving the previous snapshot.
+export const FRESH_OK_MS = 110_000;
+export const FRESH_OTHER_MS = 60_000;
 const WAIT_FOR_READ_MS = 22_000;
 const READ_CLAIM_MS = 60_000;
 
