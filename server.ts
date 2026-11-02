@@ -77,16 +77,39 @@ export default async function plugin(bb: BbPluginApi) {
     },
     overlayColorMode: {
       type: "select",
-      label: "Usage pill color mode",
+      label: "Usage pill ring color",
       description:
-        "adaptive: rings always use warning colors · monochrome: neutral rings · severity: neutral until a window drops below the warn threshold.",
-      options: ["adaptive", "monochrome", "severity"],
+        "adaptive: green→amber→red by remaining quota · monochrome: always neutral · severity: neutral until warn · accent: theme primary · custom: your own color. Warn/critical overrides apply except in monochrome.",
+      options: ["adaptive", "monochrome", "severity", "accent", "custom"],
       experimental_optionLabels: {
-        adaptive: "Adaptive (warning colors)",
-        monochrome: "Monochrome",
+        adaptive: "Adaptive (green → amber → red)",
+        monochrome: "Monochrome (always neutral)",
         severity: "Severity only",
+        accent: "Theme accent",
+        custom: "Custom color",
       },
       default: "adaptive",
+    },
+    overlayCustomColor: {
+      type: "string",
+      label: "Custom ring color (hex)",
+      description:
+        "Used when ring color is 'Custom color', e.g. #8b5cf6, #34d399, #f472b6.",
+      default: "#8b5cf6",
+    },
+    overlayIconTone: {
+      type: "select",
+      label: "Usage pill icon color",
+      description:
+        "auto: monochrome icons only when rings are monochrome · color: brand colors · mono: neutral · ring: icon takes the ring's status color.",
+      options: ["auto", "color", "mono", "ring"],
+      experimental_optionLabels: {
+        auto: "Auto (follow ring)",
+        color: "Brand colors",
+        mono: "Monochrome",
+        ring: "Match ring tone",
+      },
+      default: "auto",
     },
     overlayIconMode: {
       type: "select",

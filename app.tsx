@@ -79,7 +79,13 @@ function headline(
   );
 }
 
-const COLOR_MODES = ["adaptive", "monochrome", "severity"] as const;
+const COLOR_MODES = [
+  "adaptive",
+  "monochrome",
+  "severity",
+  "accent",
+  "custom",
+] as const;
 type ColorMode = (typeof COLOR_MODES)[number];
 
 function tone(
@@ -88,15 +94,23 @@ function tone(
     colorMode: ColorMode;
     warnBelow: number;
     critBelow: number;
+    customColor: string;
   },
 ): string {
   if (cfg.colorMode === "monochrome")
     return "var(--foreground, #e4e4e7)";
   if (left <= cfg.critBelow) return "var(--destructive, #ef4444)";
-  if (left <= cfg.warnBelow) return "#f59e0b";
-  return cfg.colorMode === "adaptive"
-    ? "#34d399"
-    : "var(--foreground, #e4e4e7)";
+  if (left <= cfg.warnBelow) return "var(--warning, #f59e0b)";
+  switch (cfg.colorMode) {
+    case "adaptive":
+      return "#34d399";
+    case "accent":
+      return "var(--primary, #fafafa)";
+    case "custom":
+      return cfg.customColor;
+    default:
+      return "var(--foreground, #e4e4e7)";
+  }
 }
 
 /** Compact reset text like the built-in panel: "4h 39m", "6d 11h", "—". */
@@ -170,9 +184,10 @@ function usedTone(
   const left = 100 - usedPercent;
   if (left <= cfg.critBelow) return "var(--destructive, #ef4444)";
   if (left <= cfg.warnBelow) return "var(--warning, #f59e0b)";
-  if (cfg.colorMode === "adaptive")
-    return "var(--primary, #fafafa)";
-  return "var(--foreground, #fafafa)";
+  if (cfg.colorMode === "custom") return cfg.customColor;
+  if (cfg.colorMode === "monochrome")
+    return "var(--foreground, #fafafa)";
+  return "var(--primary, #fafafa)";
 }
 
 function severity(
@@ -294,6 +309,18 @@ type Size = (typeof SIZES)[number];
 const ICON_MODES = ["icon", "dot", "none"] as const;
 type IconMode = (typeof ICON_MODES)[number];
 
+const ICON_TONES = ["auto", "color", "mono", "ring"] as const;
+type IconTone = (typeof ICON_TONES)[number];
+
+/** Resolves the effective icon tone: "auto" follows the ring mode. */
+function iconToneOf(cfg: {
+  iconTone: IconTone;
+  colorMode: ColorMode;
+}): "color" | "mono" | "ring" {
+  if (cfg.iconTone !== "auto") return cfg.iconTone;
+  return cfg.colorMode === "monochrome" ? "mono" : "color";
+}
+
 interface OverlayConfig {
   enabled: boolean;
   minutes: number;
@@ -301,7 +328,9 @@ interface OverlayConfig {
   orientation: Orientation;
   size: Size;
   colorMode: ColorMode;
+  customColor: string;
   iconMode: IconMode;
+  iconTone: IconTone;
   showPercent: boolean;
   headlineMode: Headline;
   warnBelow: number;
@@ -335,7 +364,13 @@ function useOverlayConfig(): OverlayConfig {
     orientation: pick(values?.overlayOrientation, ORIENTATIONS, "horizontal"),
     size: pick(values?.overlaySize, SIZES, "comfortable"),
     colorMode: pick(values?.overlayColorMode, COLOR_MODES, "adaptive"),
+    customColor: /^#[0-9a-f]{3,8}$/i.test(
+      String(values?.overlayCustomColor ?? ""),
+    )
+      ? String(values?.overlayCustomColor)
+      : "#8b5cf6",
     iconMode: pick(values?.overlayIconMode, ICON_MODES, "icon"),
+    iconTone: pick(values?.overlayIconTone, ICON_TONES, "auto"),
     showPercent: values?.overlayShowPercent === true,
     headlineMode: pick(values?.overlayHeadline, HEADLINES, "weekly"),
     warnBelow: Number(values?.overlayWarnBelow ?? 20) || 20,
@@ -550,29 +585,35 @@ const Chip = memo(function Chip({
         } ${failed ? "opacity-50" : ""}`}
       >
       <UsageRing left={left} color={color} size={scale.ring} stroke={scale.stroke}>
-        {cfg.iconMode === "icon" && (
-          <span
-            className="grid place-items-center"
-            style={
-              cfg.colorMode === "monochrome"
-                ? {
-                    color: "var(--muted-foreground, #a1a1aa)",
-                    filter: "grayscale(1)",
+        {cfg.iconMode === "icon" &&
+          (() => {
+            const iconTone = iconToneOf(cfg);
+            return (
+              <span
+                className="grid place-items-center"
+                style={
+                  iconTone === "mono"
+                    ? {
+                        color: "var(--muted-foreground, #a1a1aa)",
+                        filter: "grayscale(1)",
+                      }
+                    : iconTone === "ring"
+                      ? { color }
+                      : undefined
+                }
+              >
+                <ProviderIcon
+                  providerKind="agent"
+                  provider={
+                    iconTone === "color"
+                      ? provider.provider
+                      : { ...provider.provider, strings: null }
                   }
-                : undefined
-            }
-          >
-            <ProviderIcon
-              providerKind="agent"
-              provider={
-                cfg.colorMode === "monochrome"
-                  ? { ...provider.provider, strings: null }
-                  : provider.provider
-              }
-              className={scale.icon}
-            />
-          </span>
-        )}
+                  className={scale.icon}
+                />
+              </span>
+            );
+          })()}
         {cfg.iconMode === "dot" && (
           <span
             className="size-1 rounded-full transition-colors duration-300"
@@ -1205,6 +1246,7 @@ function PositionPreview({
         >
           {mockLefts.map((left, index) => {
             const color = tone(left, config);
+            const iconTone = iconToneOf(config);
             return (
               <span key={index} className="inline-flex items-center gap-1">
                 <UsageRing
@@ -1218,9 +1260,12 @@ function PositionPreview({
                       className="size-1 rounded-full"
                       style={{
                         background:
-                          config.iconMode === "dot"
+                          config.iconMode === "dot" ||
+                          iconTone === "ring"
                             ? color
-                            : mockTints[index],
+                            : iconTone === "mono"
+                              ? "var(--muted-foreground, #a1a1aa)"
+                              : mockTints[index],
                       }}
                     />
                   )}
