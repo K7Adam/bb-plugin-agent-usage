@@ -23,6 +23,7 @@ interface UsageWindow {
   label: string;
   usedPercent: number;
   resetsAt: string | null;
+  cost?: { usedUsdCents: number; limitUsdCents: number } | null;
 }
 
 interface ProviderEntry {
@@ -33,6 +34,7 @@ interface ProviderEntry {
   status: string;
   message: string | null;
   planLabel: string | null;
+  accountEmail: string | null;
   windows: UsageWindow[];
   provider: {
     id: string;
@@ -109,6 +111,97 @@ function countdown(resetsAt: string | null): string {
   return minutes > 0 ? `${minutes}m` : "<1m";
 }
 
+/** Compact reset text like the built-in panel: "4h 39m", "6d 11h", "—". */
+function resetShort(resetsAt: string | null): string {
+  if (resetsAt === null) return "—";
+  const ms = new Date(resetsAt).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return "—";
+  if (ms <= 0) return "now";
+  const minutes = Math.ceil(ms / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24)
+    return minutes % 60 === 0 ? `${hours}h` : `${hours}h ${minutes % 60}m`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 === 0 ? `${days}d` : `${days}d ${hours % 24}h`;
+}
+
+/** Long reset text for the expanded row, like the built-in panel. */
+function resetLong(resetsAt: string | null): string | null {
+  if (resetsAt === null) return null;
+  const date = new Date(resetsAt);
+  if (Number.isNaN(date.getTime())) return null;
+  const ms = date.getTime() - Date.now();
+  if (ms <= 0) return "Resetting now";
+  const minutes = Math.round(ms / 60_000);
+  if (minutes < 60) return `Resets in ${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) {
+    const rest = minutes % 60;
+    return rest === 0
+      ? `Resets in ${hours} hr`
+      : `Resets in ${hours} hr ${rest} min`;
+  }
+  const withinWeek = ms < 10080 * 6e4;
+  return `Resets ${date.toLocaleString(undefined, {
+    weekday: withinWeek ? "short" : undefined,
+    month: withinWeek ? undefined : "short",
+    day: withinWeek ? undefined : "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })}`;
+}
+
+/** Shorten window labels like the built-in panel ("Weekly · X" → "7d · X"). */
+function shortLabel(label: string): string {
+  const parts = label.split("·").map((part) => part.trim()).filter(Boolean);
+  const abbrev = (part: string): string | null => {
+    if (/^(five[- ]?hour|5[- ]?h(ours?)?)\b/i.test(part)) return "5h";
+    if (/^(week|7[- ]?d(ays?)?)\b/i.test(part)) return "7d";
+    if (/^(dail|1[- ]?d(ay)?)\b/i.test(part)) return "1d";
+    if (/^month/i.test(part)) return "Monthly";
+    return null;
+  };
+  const normalized = parts.map((part) => abbrev(part) ?? part);
+  // Put the duration first ("Gemini Models · Weekly" → "7d · Gemini Models")
+  const durationIndex = normalized.findIndex((part, index) =>
+    abbrev(parts[index]) !== null,
+  );
+  if (durationIndex > 0) {
+    const [duration] = normalized.splice(durationIndex, 1);
+    normalized.unshift(duration);
+  }
+  return normalized.join(" · ");
+}
+
+/** Bar fill / percent colour, mirroring the built-in panel thresholds. */
+function usedTone(
+  usedPercent: number,
+  cfg: OverlayConfig,
+): string {
+  const left = 100 - usedPercent;
+  if (left <= cfg.critBelow) return "var(--destructive, #ef4444)";
+  if (left <= cfg.warnBelow) return "var(--warning, #f59e0b)";
+  if (cfg.colorMode === "adaptive")
+    return "var(--primary, #fafafa)";
+  return "var(--foreground, #fafafa)";
+}
+
+function severity(
+  provider: ProviderEntry,
+): "critical" | "warning" | null {
+  if (provider.status !== "ok") return null;
+  const worst = Math.max(0, ...provider.windows.map((w) => w.usedPercent));
+  if (worst >= 95) return "critical";
+  if (worst >= 80) return "warning";
+  return null;
+}
+
+function usd(cents: number, whole: boolean): string {
+  const amount = cents / 100;
+  return `$${whole ? amount.toFixed(0) : amount.toFixed(2)}`;
+}
+
 function ago(fetchedAt: number): string {
   const ms = Date.now() - fetchedAt;
   if (ms < 5_000) return "just now";
@@ -150,7 +243,27 @@ async function loadSnapshot(sdk: ReturnType<typeof useSdk>): Promise<Snapshot> {
                 entry && typeof entry.planLabel === "string"
                   ? entry.planLabel
                   : null,
-              windows: entry?.status === "ok" ? entry.windows : [],
+              accountEmail:
+                entry && typeof entry.accountEmail === "string"
+                  ? entry.accountEmail
+                  : null,
+              windows:
+                entry?.status === "ok"
+                  ? entry.windows.map((window) => ({
+                      ...window,
+                      cost:
+                        window.cost &&
+                        typeof window.cost.usedUsdCents === "number"
+                          ? {
+                              usedUsdCents: window.cost.usedUsdCents,
+                              limitUsdCents:
+                                typeof window.cost.limitUsdCents === "number"
+                                  ? window.cost.limitUsdCents
+                                  : 0,
+                            }
+                          : null,
+                    }))
+                  : [],
               provider: {
                 id: provider.id,
                 logoUrl: provider.logoUrl,
@@ -331,8 +444,6 @@ function popupStyle(position: Position): React.CSSProperties {
   const style: React.CSSProperties = {
     position: "absolute",
     width: 300,
-    maxHeight: "60vh",
-    overflowY: "auto",
     zIndex: 1001,
   };
   if (position.startsWith("top")) style.top = "calc(100% + 8px)";
@@ -395,68 +506,175 @@ const Chip = memo(function Chip({
   );
 });
 
+/** One limit window, styled after the built-in panel: label | bar | % | reset.
+ * Rows span the shared outer grid so columns align across providers. */
+const WindowRow = memo(function WindowRow({
+  window,
+  cfg,
+}: {
+  window: UsageWindow;
+  cfg: OverlayConfig;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const used = Math.max(0, Math.min(100, Math.round(window.usedPercent)));
+  const color = usedTone(used, cfg);
+  const long = expanded ? resetLong(window.resetsAt) : null;
+  const cost =
+    window.cost != null
+      ? `${usd(window.cost.usedUsdCents, true)} / ${usd(window.cost.limitUsdCents, false)}`
+      : `${used}% used`;
+  return (
+    <button
+      type="button"
+      className="col-span-full grid grid-cols-subgrid rounded-sm text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      title={`${window.label} · ${resetLong(window.resetsAt) ?? "Reset time not reported"}`}
+      aria-expanded={expanded}
+      onClick={() => setExpanded((value) => !value)}
+    >
+      <span className="col-span-full grid h-5 grid-cols-subgrid items-center text-2xs">
+        <span className="max-w-20 truncate text-muted-foreground">
+          {shortLabel(window.label)}
+        </span>
+        <span className="h-1 min-w-0 overflow-hidden rounded-full bg-border/70">
+          <span
+            className="block h-full rounded-full transition-[width] duration-500"
+            style={{
+              width: `${Math.max(2, Math.min(100, used))}%`,
+              background: color,
+            }}
+          />
+        </span>
+        <span className="text-right tabular-nums" style={{ color }}>
+          {used}%
+        </span>
+        <span
+          aria-hidden="true"
+          className="min-w-9 text-right tabular-nums text-muted-foreground"
+        >
+          {resetShort(window.resetsAt)}
+        </span>
+      </span>
+      {expanded && (
+        <span className="col-span-full pb-1 text-2xs text-muted-foreground">
+          {window.label} · {long ?? "Reset time not reported."} · {cost}
+        </span>
+      )}
+    </button>
+  );
+});
+
+function statusText(provider: ProviderEntry): string {
+  switch (provider.status) {
+    case "not_installed":
+      return "Not installed on this machine.";
+    case "unauthenticated":
+      return "Not signed in.";
+    case "expired":
+      return "Session expired — sign in again.";
+    case "error":
+      return provider.message ?? "Usage could not be read.";
+    default:
+      return "Usage not reported.";
+  }
+}
+
+/** Provider section styled after the built-in panel: icon + account + plan
+ * badge on one h-5 row, then a shared grid of window rows. */
 const ProviderRows = memo(function ProviderRows({
   provider,
   cfg,
+  showProvider,
+  showHost,
 }: {
   provider: ProviderEntry;
   cfg: OverlayConfig;
+  showProvider: boolean;
+  showHost: boolean;
 }) {
+  const label = provider.accountEmail ?? provider.displayName;
   return (
-    <div className="mb-2 last:mb-0">
-      <div className="flex items-center gap-1.5 font-semibold">
-        <ProviderIcon providerKind="agent" provider={provider.provider} />
-        <span>{provider.displayName}</span>
-        {provider.planLabel && (
-          <span className="font-normal text-muted-foreground">
-            {provider.planLabel}
+    <section
+      aria-label={showProvider ? `${provider.displayName} ${label}` : label}
+      className="col-span-full grid grid-cols-subgrid py-1 first:pt-0 last:pb-0"
+    >
+      <div className="col-span-full flex h-5 min-w-0 items-center gap-1.5">
+        {showProvider && (
+          <ProviderIcon
+            providerKind="agent"
+            provider={provider.provider}
+            className="size-3 shrink-0"
+          />
+        )}
+        <h3
+          title={label}
+          className="min-w-0 flex-1 truncate text-2xs font-medium text-foreground"
+        >
+          {label}
+        </h3>
+        {showHost && provider.hostName && (
+          <span className="shrink-0 truncate text-2xs text-muted-foreground">
+            {provider.hostName}
           </span>
         )}
-        {provider.hostName && (
-          <span className="ml-auto font-normal text-muted-foreground">
-            {provider.hostName}
+        {provider.planLabel && (
+          <span className="shrink-0 rounded-sm bg-border/60 px-1 py-0.5 text-2xs leading-none text-muted-foreground">
+            {provider.planLabel}
           </span>
         )}
       </div>
       {provider.status === "ok" ? (
-        provider.windows.map((window) => {
-          const left = remaining(window);
-          return (
-            <div
-              key={window.label}
-              className="flex items-start justify-between gap-3 pl-[22px] py-0.5"
-            >
-              <span className="min-w-0 flex-1 text-muted-foreground">
-                {window.label}
-              </span>
-              <span className="flex shrink-0 items-center gap-2">
-                <span className="h-1 w-14 overflow-hidden rounded-full bg-muted-foreground/20">
-                  <span
-                    className="block h-full rounded-full transition-[width] duration-500"
-                    style={{ width: `${left}%`, background: tone(left, cfg) }}
-                  />
-                </span>
-                <span
-                  className="w-7 text-right font-medium"
-                  style={{ color: tone(left, cfg) }}
-                >
-                  {left}%
-                </span>
-                <span className="w-14 text-right text-muted-foreground">
-                  {window.resetsAt ? countdown(window.resetsAt) : ""}
-                </span>
-              </span>
-            </div>
-          );
-        })
+        provider.windows.length > 0 ? (
+          provider.windows.map((window) => (
+            <WindowRow key={window.label} window={window} cfg={cfg} />
+          ))
+        ) : (
+          <p className="col-span-full text-2xs text-muted-foreground">
+            No usage limits reported for this plan.
+          </p>
+        )
       ) : (
-        <div className="pl-[18px] text-muted-foreground">
-          {provider.message ?? provider.status}
-        </div>
+        <p className="col-span-full text-2xs text-muted-foreground">
+          {statusText(provider)}
+        </p>
       )}
-    </div>
+    </section>
   );
 });
+
+function RotateCcw({ spinning }: { spinning: boolean }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={`size-3.5 ${spinning ? "animate-spin" : ""}`}
+    >
+      <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+    </svg>
+  );
+}
+
+function ChevronDown() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className="size-3.5"
+    >
+      <path d="m6 9 6 6 6-6" />
+    </svg>
+  );
+}
 
 // ---------- the overlay ----------
 
@@ -467,6 +685,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<string | null>(null);
   const inFlight = useRef(false);
   const lastFetch = useRef(0);
 
@@ -526,12 +745,53 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   if (snapshot === null && !loading) return null;
 
   const scale = SCALE[config.size];
-  const chips = snapshot?.providers.filter(
+  const allProviders = snapshot?.providers ?? [];
+  const chips = allProviders.filter(
     (provider) =>
       provider.status === "ok" &&
       headline(provider, config.headlineMode) !== null &&
       (config.providers === null || config.providers.has(provider.providerId)),
   );
+
+  // Popup tab model: one tab per unique providerId (like the built-in panel).
+  const seen = new Map<
+    string,
+    {
+      providerId: string;
+      displayName: string;
+      provider: ProviderEntry["provider"];
+      severity: "critical" | "warning" | null;
+    }
+  >();
+  for (const provider of allProviders) {
+    const found = seen.get(provider.providerId);
+    const sev = severity(provider);
+    const rank = sev === "critical" ? 2 : sev === "warning" ? 1 : 0;
+    if (!found) {
+      seen.set(provider.providerId, {
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        provider: provider.provider,
+        severity: sev,
+      });
+    } else {
+      const old = found.severity === "critical" ? 2 : found.severity === "warning" ? 1 : 0;
+      if (rank > old) found.severity = sev;
+    }
+  }
+  const uniqueProviders = [...seen.values()];
+  const multiHost =
+    new Set(
+      allProviders.map((provider) => provider.hostName ?? provider.key),
+    ).size > 1;
+  const hostLabel =
+    [...new Set(allProviders.map((provider) => provider.hostName))]
+      .filter(Boolean)
+      .join(" · ") || null;
+  const visibleProviders =
+    tab === null
+      ? allProviders
+      : allProviders.filter((provider) => provider.providerId === tab);
 
   return (
     <div
@@ -547,39 +807,135 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       {open && (
         <div
           role="dialog"
-          className="rounded-[10px] border border-border bg-popover p-3 shadow-xl"
+          className="overflow-hidden rounded-[10px] border border-border bg-popover shadow-xl"
           style={popupStyle(config.position)}
         >
-          <div className="mb-2 flex items-center justify-between">
-            <strong>Usage</strong>
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => void refresh()}
-                className="rounded-md px-2 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                style={{ fontSize: scale.font }}
-                title="Refresh now"
+          {/* toolbar — provider tabs like the built-in panel */}
+          <div className="flex h-9 min-w-0 items-center gap-1 border-b border-border/60 px-1.5">
+            {uniqueProviders.length < 2 ? (
+              <span className="px-1.5 text-2xs font-medium">Usage</span>
+            ) : (
+              <div
+                role="tablist"
+                aria-label="Usage provider"
+                className="flex min-w-0 shrink items-center gap-0.5 overflow-x-auto"
               >
-                {loading ? "…" : "↻ Refresh"}
-              </button>
-              <button
-                onClick={() => setOpen(false)}
-                className="rounded-md px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                title="Close"
-              >
-                ✕
-              </button>
-            </div>
+                <button
+                  type="button"
+                  role="tab"
+                  title="All accounts"
+                  aria-selected={tab === null}
+                  onClick={() => setTab(null)}
+                  className={`relative flex h-6 shrink-0 items-center justify-center rounded-md px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    tab === null
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <span className="text-2xs font-medium">All</span>
+                </button>
+                {uniqueProviders.map((provider) => {
+                  const selected = provider.providerId === tab;
+                  const sev = provider.severity;
+                  return (
+                    <button
+                      key={provider.providerId}
+                      type="button"
+                      role="tab"
+                      title={
+                        sev === null
+                          ? provider.displayName
+                          : `${provider.displayName}: an account usage window is at least ${
+                              sev === "critical" ? "95" : "80"
+                            }% used.`
+                      }
+                      aria-label={provider.displayName}
+                      aria-selected={selected}
+                      onClick={() =>
+                        setTab(selected ? null : provider.providerId)
+                      }
+                      className={`group/tab relative flex h-6 w-7 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        selected
+                          ? "bg-muted text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <ProviderIcon
+                        providerKind="agent"
+                        provider={provider.provider}
+                        className={`size-3.5 ${
+                          selected
+                            ? ""
+                            : "opacity-60 group-hover/tab:opacity-100"
+                        }`}
+                      />
+                      {sev !== null && !selected && tab !== null && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute right-0.5 top-0.5 size-1.5 rounded-full ring-2 ring-popover"
+                          style={{
+                            background:
+                              sev === "critical"
+                                ? "var(--destructive, #ef4444)"
+                                : "var(--warning, #f59e0b)",
+                          }}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <span className="min-w-0 flex-1" />
+            {multiHost && (
+              <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">
+                {tab === null ? "All hosts" : hostLabel}
+              </span>
+            )}
+            <button
+              type="button"
+              aria-label="Reload provider usage"
+              title="Refresh now"
+              disabled={loading}
+              onClick={() => void refresh()}
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            >
+              <RotateCcw spinning={loading} />
+            </button>
+            <button
+              type="button"
+              aria-label="Close"
+              title="Close"
+              onClick={() => setOpen(false)}
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronDown />
+            </button>
           </div>
-          {(snapshot?.providers ?? []).map((provider) => (
-            <ProviderRows key={provider.key} provider={provider} cfg={config} />
-          ))}
-          {snapshot?.error && (
-            <div className="text-destructive">{snapshot.error}</div>
-          )}
-          <div
-            className="mt-1.5 text-muted-foreground"
-            style={{ fontSize: scale.font - 1 }}
-          >
+          {/* body — one shared grid so columns align across providers */}
+          <div className="grid max-h-[55vh] grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-2 overflow-y-auto px-2 py-1.5">
+            {visibleProviders.map((provider) => (
+              <ProviderRows
+                key={provider.key}
+                provider={provider}
+                cfg={config}
+                showProvider={tab === null}
+                showHost={multiHost}
+              />
+            ))}
+            {visibleProviders.length === 0 && (
+              <p className="col-span-full py-2 text-2xs text-muted-foreground">
+                {loading ? "Loading usage…" : "No providers report usage."}
+              </p>
+            )}
+            {snapshot?.error && (
+              <p className="col-span-full py-1 text-2xs text-destructive">
+                {snapshot.error}
+              </p>
+            )}
+          </div>
+          {/* footer */}
+          <div className="border-t border-border/60 px-2.5 py-1.5 text-2xs text-muted-foreground">
             {snapshot ? `Updated ${ago(snapshot.fetchedAt)}` : "Loading…"}
             {config.minutes <= 0
               ? " · manual mode"
