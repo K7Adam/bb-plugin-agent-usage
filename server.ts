@@ -171,6 +171,13 @@ export default async function plugin(bb: BbPluginApi) {
       description: "Chips at or below the critical threshold pulse gently.",
       default: false,
     },
+    overlayMobileCompact: {
+      type: "boolean",
+      label: "Compact on small screens",
+      description:
+        "Shrink the pill to its compact size on viewports ≤ 520px (phones, narrow windows).",
+      default: true,
+    },
     overlayProviders: {
       type: "string",
       label: "Providers shown in the pill",

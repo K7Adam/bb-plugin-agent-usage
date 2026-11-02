@@ -338,6 +338,7 @@ interface OverlayConfig {
   opacity: number;
   providers: ReadonlySet<string> | null;
   pulseCritical: boolean;
+  mobileCompact: boolean;
 }
 
 function pick<T extends string>(
@@ -378,7 +379,23 @@ function useOverlayConfig(): OverlayConfig {
     opacity: Math.min(100, Math.max(20, Number(values?.overlayOpacity ?? 100) || 100)),
     providers: csv === "" ? null : new Set(csv.split(",").map((id) => id.trim()).filter(Boolean)),
     pulseCritical: values?.overlayPulseCritical === true,
+    mobileCompact: values?.overlayMobileCompact !== false,
   };
+}
+
+/** Reactive media query — re-renders when the viewport crosses the query. */
+function useMediaQuery(query: string): boolean {
+  const [matches, setMatches] = useState(
+    () => typeof window !== "undefined" && window.matchMedia(query).matches,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia(query);
+    const onChange = () => setMatches(mql.matches);
+    onChange();
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, [query]);
+  return matches;
 }
 
 const SCALE: Record<
@@ -474,7 +491,9 @@ function positionStyle(position: Position): React.CSSProperties {
 function popupStyle(position: Position): React.CSSProperties {
   const style: React.CSSProperties = {
     position: "absolute",
-    width: 300,
+    // Never wider than the viewport minus the pill's 12px screen offsets —
+    // keeps the popup fully on screen even on ~360px phones.
+    width: "min(300px, calc(100vw - 24px))",
     zIndex: 1001,
   };
   if (position.startsWith("top")) style.top = "calc(100% + 8px)";
@@ -520,14 +539,18 @@ function HoverTip({
   detail: string;
   children: React.ReactNode;
 }) {
+  // Touch devices have no hover — a tap would flash the tooltip on the way to
+  // opening the popup, so skip it entirely there.
+  const canHover = useMediaQuery("(hover: hover)");
   return (
     <span className="relative group/tip">
       {children}
-      <span
-        role="tooltip"
-        className="pointer-events-none absolute z-50 whitespace-nowrap"
-        style={tooltipAnchor(cfg)}
-      >
+      {canHover && (
+        <span
+          role="tooltip"
+          className="pointer-events-none absolute z-50 whitespace-nowrap"
+          style={tooltipAnchor(cfg)}
+        >
         <span
           className="block scale-90 opacity-0 transition-all duration-150 ease-out group-hover/tip:scale-100 group-hover/tip:opacity-100"
           style={{ transformOrigin: tooltipOrigin(cfg) }}
@@ -536,8 +559,9 @@ function HoverTip({
             <span className="block font-medium leading-tight">{label}</span>
             <span className="block leading-tight opacity-80">{detail}</span>
           </span>
+          </span>
         </span>
-      </span>
+      )}
     </span>
   );
 }
@@ -819,6 +843,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<string | null>(null);
+  const isMobile = useMediaQuery("(max-width: 520px)");
   const inFlight = useRef(false);
   const lastFetch = useRef(0);
 
@@ -901,7 +926,8 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   if (!config.enabled) return null;
   if (snapshot === null && !loading) return null;
 
-  const scale = SCALE[config.size];
+  const scale =
+    SCALE[isMobile && config.mobileCompact ? "compact" : config.size];
   const allProviders = snapshot?.providers ?? [];
   const chips = allProviders.filter(
     (provider) =>
