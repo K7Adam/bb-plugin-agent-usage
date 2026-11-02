@@ -3,7 +3,14 @@
 // interval. Click opens a popup with every limit window and a refresh
 // button. Position, orientation, size and cadence are plugin settings,
 // edited in a settings section with a live, interactive preview.
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import {
   definePluginApp,
   experimental_ProviderIcon,
@@ -804,86 +811,140 @@ const WindowRow = memo(function WindowRow({
   );
 });
 
-/** Shared snapshot lifecycle: visibility-gated polling, focus-refresh when
- * stale, refetch on realtime reconnect and host changes. `active` lets
- * callers stop polling without unmounting (e.g. a hidden overlay). */
+/** Module-level usage store shared by every surface (overlay pill, nav page,
+ * nav badge). The first active consumer starts the lifecycle — visibility-gated
+ * polling, focus-refresh when stale, refetch on realtime reconnect and host
+ * changes — and the last release tears it down. All consumers observe the same
+ * snapshot, so the badge, pill and page can never disagree or double-poll. */
+const usageStore = {
+  snapshot: null as Snapshot | null,
+  loading: false,
+  version: 0,
+  listeners: new Set<() => void>(),
+  consumers: 0,
+  started: false,
+  sdk: null as ReturnType<typeof useSdk> | null,
+  intervalMs: 0,
+  lastFetch: 0,
+  inFlight: false,
+  cleanup: [] as Array<() => void>,
+
+  emit() {
+    this.version++;
+    for (const listener of this.listeners) listener();
+  },
+
+  stale() {
+    return Date.now() - this.lastFetch >= this.intervalMs;
+  },
+
+  async refresh(force = false): Promise<void> {
+    if (this.inFlight || this.sdk === null) return;
+    this.inFlight = true;
+    this.loading = true;
+    this.emit();
+    try {
+      const next = await loadSnapshot(this.sdk, force);
+      this.lastFetch = next.fetchedAt;
+      this.snapshot = next;
+    } catch (cause) {
+      this.snapshot = {
+        providers: [],
+        fetchedAt: Date.now(),
+        error: cause instanceof Error ? cause.message : String(cause),
+      };
+    } finally {
+      this.inFlight = false;
+      this.loading = false;
+      this.emit();
+    }
+  },
+
+  /** Start consuming. The lifecycle starts on the first consumer and stops
+   * when the last one releases. Returns the release function. */
+  acquire(sdk: ReturnType<typeof useSdk>, intervalMs: number): () => void {
+    this.consumers++;
+    this.sdk = sdk;
+    this.intervalMs = Math.max(0, intervalMs);
+    if (!this.started) {
+      this.started = true;
+      const onVisible = () => {
+        if (!document.hidden && this.stale()) void this.refresh();
+      };
+      document.addEventListener("visibilitychange", onVisible);
+      const timer =
+        this.intervalMs > 0
+          ? setInterval(() => {
+              if (!document.hidden) void this.refresh();
+            }, this.intervalMs)
+          : null;
+      const unsubscribe = sdk.subscribe({
+        event: "host:changed",
+        callback: () => {
+          if (!document.hidden) void this.refresh();
+        },
+      });
+      this.cleanup = [
+        () => document.removeEventListener("visibilitychange", onVisible),
+        () => {
+          if (timer !== null) clearInterval(timer);
+        },
+        typeof unsubscribe === "function" ? unsubscribe : () => {},
+      ];
+      if (!document.hidden) void this.refresh();
+    }
+    return () => {
+      this.consumers = Math.max(0, this.consumers - 1);
+      if (this.consumers === 0 && this.started) {
+        this.started = false;
+        for (const dispose of this.cleanup) dispose();
+        this.cleanup = [];
+      }
+    };
+  },
+};
+
 function useUsageData(
   sdk: ReturnType<typeof useSdk>,
   minutes: number,
   active: boolean,
-): { snapshot: Snapshot | null; loading: boolean; refresh: (force?: boolean) => Promise<void> } {
+): {
+  snapshot: Snapshot | null;
+  loading: boolean;
+  refresh: (force?: boolean) => Promise<void>;
+} {
   const connection = useRealtimeConnectionState();
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
-  const [loading, setLoading] = useState(false);
-  const inFlight = useRef(false);
-  const lastFetch = useRef(0);
-
-  const refresh = useCallback(
-    async (force = false) => {
-      if (inFlight.current) return;
-      inFlight.current = true;
-      setLoading(true);
-      try {
-        const next = await loadSnapshot(sdk, force);
-        lastFetch.current = next.fetchedAt;
-        setSnapshot(next);
-      } catch (cause) {
-        setSnapshot({
-          providers: [],
-          fetchedAt: Date.now(),
-          error: cause instanceof Error ? cause.message : String(cause),
-        });
-      } finally {
-        inFlight.current = false;
-        setLoading(false);
-      }
-    },
-    [sdk],
+  useSyncExternalStore(
+    useCallback((listener) => {
+      usageStore.listeners.add(listener);
+      return () => usageStore.listeners.delete(listener);
+    }, []),
+    useCallback(() => usageStore.version, []),
   );
 
-  const intervalMs = Math.max(0, minutes) * 60_000;
-  const stale = useCallback(
-    () => Date.now() - lastFetch.current >= intervalMs,
-    [intervalMs],
-  );
-
-  // Poll only while the window is visible; re-fetch on focus when stale.
   useEffect(() => {
     if (!active) return;
-    if (!document.hidden) void refresh();
-    const onVisible = () => {
-      if (!document.hidden && stale()) void refresh();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    if (intervalMs <= 0) {
-      return () => document.removeEventListener("visibilitychange", onVisible);
+    return usageStore.acquire(sdk, minutes * 60_000);
+  }, [sdk, minutes, active]);
+
+  // Recover after a dropped realtime connection; the store dedupes when
+  // several consumers notice the reconnect at once.
+  useEffect(() => {
+    if (
+      active &&
+      connection === "connected" &&
+      usageStore.started &&
+      usageStore.stale()
+    ) {
+      void usageStore.refresh();
     }
-    const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, intervalMs);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [active, intervalMs, refresh, stale]);
+  }, [active, connection]);
 
-  // Recover after a dropped realtime connection.
-  useEffect(() => {
-    if (active && connection === "connected" && stale()) void refresh();
-  }, [active, connection, refresh, stale]);
-
-  // Refetch when hosts connect or disconnect.
-  useEffect(() => {
-    if (!active) return;
-    return sdk.subscribe({
-      event: "host:changed",
-      callback: () => {
-        if (!document.hidden) void refresh();
-      },
-    });
-  }, [sdk, active, refresh]);
-
-  return { snapshot, loading, refresh };
+  return {
+    snapshot: usageStore.snapshot,
+    loading: usageStore.loading,
+    refresh: useCallback((force?: boolean) => usageStore.refresh(force), []),
+  };
 }
 
 function statusText(provider: ProviderEntry): string {
@@ -1236,7 +1297,6 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   const isMobile = useMediaQuery("(max-width: 520px)");
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const { set: writeSetting } = useWriteSetting();
-  const inFlight = useRef(false);
   // Drag-to-dock: live position while a drag is in progress; the committed
   // position lives in the overlayDock setting (or the preset position).
   const pillRef = useRef<HTMLButtonElement>(null);
