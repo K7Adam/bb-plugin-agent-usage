@@ -3,14 +3,7 @@
 // interval. Click opens a popup with every limit window and a refresh
 // button. Position, orientation, size and cadence are plugin settings,
 // edited in a settings section with a live, interactive preview.
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
   definePluginApp,
   experimental_ProviderIcon,
@@ -21,8 +14,6 @@ import {
 } from "@get-bb/plugin-sdk/app";
 import type {
   ExperimentalAppOverlayProps,
-  ExperimentalBadge,
-  PluginNavPanelProps,
   PluginSettingsSectionProps,
 } from "@get-bb/plugin-sdk/app";
 
@@ -348,7 +339,6 @@ interface OverlayConfig {
   providers: ReadonlySet<string> | null;
   pulseCritical: boolean;
   mobileCompact: boolean;
-  onMobile: boolean;
   dock: Dock | null;
 }
 
@@ -391,9 +381,6 @@ function useOverlayConfig(): OverlayConfig {
     providers: csv === "" ? null : new Set(csv.split(",").map((id) => id.trim()).filter(Boolean)),
     pulseCritical: values?.overlayPulseCritical === true,
     mobileCompact: values?.overlayMobileCompact !== false,
-    // The overlay fights app UI for space on small screens — off by default
-    // there; the nav-panel page + badge are the native mobile surface.
-    onMobile: values?.overlayOnMobile === true,
     dock: parseDock(values?.overlayDock),
   };
 }
@@ -811,142 +798,6 @@ const WindowRow = memo(function WindowRow({
   );
 });
 
-/** Module-level usage store shared by every surface (overlay pill, nav page,
- * nav badge). The first active consumer starts the lifecycle — visibility-gated
- * polling, focus-refresh when stale, refetch on realtime reconnect and host
- * changes — and the last release tears it down. All consumers observe the same
- * snapshot, so the badge, pill and page can never disagree or double-poll. */
-const usageStore = {
-  snapshot: null as Snapshot | null,
-  loading: false,
-  version: 0,
-  listeners: new Set<() => void>(),
-  consumers: 0,
-  started: false,
-  sdk: null as ReturnType<typeof useSdk> | null,
-  intervalMs: 0,
-  lastFetch: 0,
-  inFlight: false,
-  cleanup: [] as Array<() => void>,
-
-  emit() {
-    this.version++;
-    for (const listener of this.listeners) listener();
-  },
-
-  stale() {
-    return Date.now() - this.lastFetch >= this.intervalMs;
-  },
-
-  async refresh(force = false): Promise<void> {
-    if (this.inFlight || this.sdk === null) return;
-    this.inFlight = true;
-    this.loading = true;
-    this.emit();
-    try {
-      const next = await loadSnapshot(this.sdk, force);
-      this.lastFetch = next.fetchedAt;
-      this.snapshot = next;
-    } catch (cause) {
-      this.snapshot = {
-        providers: [],
-        fetchedAt: Date.now(),
-        error: cause instanceof Error ? cause.message : String(cause),
-      };
-    } finally {
-      this.inFlight = false;
-      this.loading = false;
-      this.emit();
-    }
-  },
-
-  /** Start consuming. The lifecycle starts on the first consumer and stops
-   * when the last one releases. Returns the release function. */
-  acquire(sdk: ReturnType<typeof useSdk>, intervalMs: number): () => void {
-    this.consumers++;
-    this.sdk = sdk;
-    this.intervalMs = Math.max(0, intervalMs);
-    if (!this.started) {
-      this.started = true;
-      const onVisible = () => {
-        if (!document.hidden && this.stale()) void this.refresh();
-      };
-      document.addEventListener("visibilitychange", onVisible);
-      const timer =
-        this.intervalMs > 0
-          ? setInterval(() => {
-              if (!document.hidden) void this.refresh();
-            }, this.intervalMs)
-          : null;
-      const unsubscribe = sdk.subscribe({
-        event: "host:changed",
-        callback: () => {
-          if (!document.hidden) void this.refresh();
-        },
-      });
-      this.cleanup = [
-        () => document.removeEventListener("visibilitychange", onVisible),
-        () => {
-          if (timer !== null) clearInterval(timer);
-        },
-        typeof unsubscribe === "function" ? unsubscribe : () => {},
-      ];
-      if (!document.hidden) void this.refresh();
-    }
-    return () => {
-      this.consumers = Math.max(0, this.consumers - 1);
-      if (this.consumers === 0 && this.started) {
-        this.started = false;
-        for (const dispose of this.cleanup) dispose();
-        this.cleanup = [];
-      }
-    };
-  },
-};
-
-function useUsageData(
-  sdk: ReturnType<typeof useSdk>,
-  minutes: number,
-  active: boolean,
-): {
-  snapshot: Snapshot | null;
-  loading: boolean;
-  refresh: (force?: boolean) => Promise<void>;
-} {
-  const connection = useRealtimeConnectionState();
-  useSyncExternalStore(
-    useCallback((listener) => {
-      usageStore.listeners.add(listener);
-      return () => usageStore.listeners.delete(listener);
-    }, []),
-    useCallback(() => usageStore.version, []),
-  );
-
-  useEffect(() => {
-    if (!active) return;
-    return usageStore.acquire(sdk, minutes * 60_000);
-  }, [sdk, minutes, active]);
-
-  // Recover after a dropped realtime connection; the store dedupes when
-  // several consumers notice the reconnect at once.
-  useEffect(() => {
-    if (
-      active &&
-      connection === "connected" &&
-      usageStore.started &&
-      usageStore.stale()
-    ) {
-      void usageStore.refresh();
-    }
-  }, [active, connection]);
-
-  return {
-    snapshot: usageStore.snapshot,
-    loading: usageStore.loading,
-    refresh: useCallback((force?: boolean) => usageStore.refresh(force), []),
-  };
-}
-
 function statusText(provider: ProviderEntry): string {
   switch (provider.status) {
     case "not_installed":
@@ -960,234 +811,6 @@ function statusText(provider: ProviderEntry): string {
     default:
       return "Usage not reported.";
   }
-}
-
-/** Provider-tab model shared by the popup and the standalone page: one tab
- * per unique providerId, "All" shows everything, a vanished selection falls
- * back to All. */
-function useUsageTabs(snapshot: Snapshot | null) {
-  const [tab, setTab] = useState<string | null>(null);
-  const allProviders = snapshot?.providers ?? [];
-  const seen = new Map<
-    string,
-    {
-      providerId: string;
-      displayName: string;
-      provider: ProviderEntry["provider"];
-      severity: "critical" | "warning" | null;
-    }
-  >();
-  for (const provider of allProviders) {
-    const found = seen.get(provider.providerId);
-    const sev = severity(provider);
-    const rank = sev === "critical" ? 2 : sev === "warning" ? 1 : 0;
-    if (!found) {
-      seen.set(provider.providerId, {
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        provider: provider.provider,
-        severity: sev,
-      });
-    } else {
-      const old = found.severity === "critical" ? 2 : found.severity === "warning" ? 1 : 0;
-      if (rank > old) found.severity = sev;
-    }
-  }
-  const uniqueProviders = [...seen.values()];
-  const multiHost =
-    new Set(allProviders.map((provider) => provider.hostId)).size > 1;
-  const hostLabel =
-    [...new Set(allProviders.map((provider) => provider.hostName))]
-      .filter(Boolean)
-      .join(" · ") || null;
-  const activeTab = tab !== null && seen.has(tab) ? tab : null;
-  const visibleProviders =
-    activeTab === null
-      ? allProviders
-      : allProviders.filter((provider) => provider.providerId === activeTab);
-  return {
-    uniqueProviders,
-    multiHost,
-    hostLabel,
-    activeTab,
-    setTab,
-    visibleProviders,
-  };
-}
-
-/** The built-in-panel layout — toolbar with provider tabs, one shared window
- * grid, refresh + status footer. Rendered inside the overlay popup and as the
- * standalone nav-panel page; `onClose` adds the dialog's close button. */
-function UsageDashboard({
-  config,
-  snapshot,
-  loading,
-  refresh,
-  tabs,
-  onClose,
-  pageMode = false,
-}: {
-  config: OverlayConfig;
-  snapshot: Snapshot | null;
-  loading: boolean;
-  refresh: (force?: boolean) => Promise<void>;
-  tabs: ReturnType<typeof useUsageTabs>;
-  onClose?: () => void;
-  /** Page mode drops the dialog's 55vh body cap — the page scrolls itself. */
-  pageMode?: boolean;
-}) {
-  const {
-    uniqueProviders,
-    multiHost,
-    hostLabel,
-    activeTab,
-    setTab,
-    visibleProviders,
-  } = tabs;
-  return (
-    <>
-      {/* toolbar — provider tabs like the built-in panel */}
-      <div className="flex h-9 min-w-0 items-center gap-1 border-b border-border/60 px-1.5">
-        {uniqueProviders.length < 2 ? (
-          <span className="px-1.5 text-2xs font-medium">Usage</span>
-        ) : (
-          <div
-            role="tablist"
-            aria-label="Usage provider"
-            className="flex min-w-0 shrink items-center gap-0.5 overflow-x-auto"
-          >
-            <button
-              type="button"
-              role="tab"
-              title="All accounts"
-              aria-selected={activeTab === null}
-              onClick={() => setTab(null)}
-              className={`relative flex h-6 shrink-0 items-center justify-center rounded-md px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                activeTab === null
-                  ? "bg-muted text-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              <span className="text-2xs font-medium">All</span>
-            </button>
-            {uniqueProviders.map((provider) => {
-              const selected = provider.providerId === activeTab;
-              const sev = provider.severity;
-              return (
-                <button
-                  key={provider.providerId}
-                  type="button"
-                  role="tab"
-                  title={
-                    sev === null
-                      ? provider.displayName
-                      : `${provider.displayName}: an account usage window is at least ${
-                          sev === "critical" ? "95" : "80"
-                        }% used.`
-                  }
-                  aria-label={provider.displayName}
-                  aria-selected={selected}
-                  onClick={() =>
-                    setTab(selected ? null : provider.providerId)
-                  }
-                  // severity dot hidden on the selected tab and in All view
-                  // (mirrors the built-in panel)
-
-                  className={`group/tab relative flex h-6 w-7 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                    selected
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <ProviderIcon
-                    providerKind="agent"
-                    provider={provider.provider}
-                    className={`size-3.5 ${
-                      selected
-                        ? ""
-                        : "opacity-60 group-hover/tab:opacity-100"
-                    }`}
-                  />
-                  {sev !== null && !selected && activeTab !== null && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute right-0.5 top-0.5 size-1.5 rounded-full ring-2 ring-popover"
-                      style={{
-                        background:
-                          sev === "critical"
-                            ? "var(--destructive, #ef4444)"
-                            : "var(--warning, #f59e0b)",
-                      }}
-                    />
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        )}
-        <span className="min-w-0 flex-1" />
-        {multiHost && (
-          <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">
-            {activeTab === null ? "All hosts" : hostLabel}
-          </span>
-        )}
-        <button
-          type="button"
-          aria-label="Reload provider usage"
-          title="Refresh now"
-          disabled={loading}
-          onClick={() => void refresh(true)}
-          className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-        >
-          <RotateCcw spinning={loading} />
-        </button>
-        {onClose !== undefined && (
-          <button
-            type="button"
-            aria-label="Close"
-            title="Close"
-            onClick={onClose}
-            className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
-            <ChevronDown />
-          </button>
-        )}
-      </div>
-      {/* body — one shared grid so columns align across providers */}
-      <div
-        className={`grid grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-2 overflow-y-auto px-2 py-1.5 ${
-          pageMode ? "" : "max-h-[55vh]"
-        }`}
-      >
-        {visibleProviders.map((provider) => (
-          <ProviderRows
-            key={provider.key}
-            provider={provider}
-            cfg={config}
-            showProvider={activeTab === null}
-            showHost={multiHost}
-          />
-        ))}
-        {visibleProviders.length === 0 && (
-          <p className="col-span-full py-2 text-2xs text-muted-foreground">
-            {loading ? "Loading usage…" : "No providers report usage."}
-          </p>
-        )}
-        {snapshot?.error && (
-          <p className="col-span-full py-1 text-2xs text-destructive">
-            {snapshot.error}
-          </p>
-        )}
-      </div>
-      {/* footer */}
-      <div className="border-t border-border/60 px-2.5 py-1.5 text-2xs text-muted-foreground">
-        {snapshot ? `Updated ${ago(snapshot.fetchedAt)}` : "Loading…"}
-        {config.minutes <= 0
-          ? " · manual mode"
-          : ` · every ${config.minutes}m`}
-      </div>
-    </>
-  );
 }
 
 /** Provider section styled after the built-in panel: icon + account + plan
@@ -1293,10 +916,15 @@ function ChevronDown() {
 function UsagePill(_props: ExperimentalAppOverlayProps) {
   const sdk = useSdk();
   const config = useOverlayConfig();
+  const connection = useRealtimeConnectionState();
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [loading, setLoading] = useState(false);
   const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<string | null>(null);
   const isMobile = useMediaQuery("(max-width: 520px)");
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const { set: writeSetting } = useWriteSetting();
+  const inFlight = useRef(false);
   // Drag-to-dock: live position while a drag is in progress; the committed
   // position lives in the overlayDock setting (or the preset position).
   const pillRef = useRef<HTMLButtonElement>(null);
@@ -1322,17 +950,73 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   // the settings write round-trips (otherwise it would jump back first).
   const [pendingStyle, setPendingStyle] =
     useState<React.CSSProperties | null>(null);
+  const lastFetch = useRef(0);
 
-  // The overlay polls only while it may render — on mobile it stays mounted
-  // but inert unless the user opted the overlay back in.
-  const overlayActive = config.enabled && !(isMobile && !config.onMobile);
-  const { snapshot, loading, refresh } = useUsageData(
-    sdk,
-    config.minutes,
-    overlayActive,
+  const refresh = useCallback(
+    async (force = false) => {
+      if (inFlight.current) return;
+      inFlight.current = true;
+      setLoading(true);
+      try {
+        const next = await loadSnapshot(sdk, force);
+        lastFetch.current = next.fetchedAt;
+        setSnapshot(next);
+      } catch (cause) {
+        setSnapshot({
+          providers: [],
+          fetchedAt: Date.now(),
+          error: cause instanceof Error ? cause.message : String(cause),
+        });
+      } finally {
+        inFlight.current = false;
+        setLoading(false);
+      }
+    },
+    [sdk],
   );
-  const tabs = useUsageTabs(snapshot);
-  const setTab = tabs.setTab;
+
+  const intervalMs = config.minutes * 60_000;
+  const stale = useCallback(
+    () => Date.now() - lastFetch.current >= intervalMs,
+    [intervalMs],
+  );
+
+  // Poll only while the window is visible; re-fetch on focus when stale.
+  useEffect(() => {
+    if (!config.enabled) return;
+    if (!document.hidden) void refresh();
+    const onVisible = () => {
+      if (!document.hidden && stale()) void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    if (intervalMs <= 0) {
+      return () => document.removeEventListener("visibilitychange", onVisible);
+    }
+    const timer = setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, intervalMs);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [config.enabled, intervalMs, refresh, stale]);
+
+  // Recover after a dropped realtime connection.
+  useEffect(() => {
+    if (config.enabled && connection === "connected" && stale())
+      void refresh();
+  }, [config.enabled, connection, refresh, stale]);
+
+  // Refetch when hosts connect or disconnect.
+  useEffect(() => {
+    if (!config.enabled) return;
+    return sdk.subscribe({
+      event: "host:changed",
+      callback: () => {
+        if (!document.hidden) void refresh();
+      },
+    });
+  }, [sdk, config.enabled, refresh]);
 
   // Escape closes the popup.
   useEffect(() => {
@@ -1502,7 +1186,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
     if (rect) commitDrop(rect.left, rect.top, rect.width, rect.height);
   };
 
-  if (!overlayActive) return null;
+  if (!config.enabled) return null;
   if (snapshot === null && !loading) return null;
 
   const scale =
@@ -1514,6 +1198,50 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
         headline(provider, config.headlineMode) !== null) &&
       (config.providers === null || config.providers.has(provider.providerId)),
   );
+
+  // Popup tab model: one tab per unique providerId (like the built-in panel).
+  const seen = new Map<
+    string,
+    {
+      providerId: string;
+      displayName: string;
+      provider: ProviderEntry["provider"];
+      severity: "critical" | "warning" | null;
+    }
+  >();
+  for (const provider of allProviders) {
+    const found = seen.get(provider.providerId);
+    const sev = severity(provider);
+    const rank = sev === "critical" ? 2 : sev === "warning" ? 1 : 0;
+    if (!found) {
+      seen.set(provider.providerId, {
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        provider: provider.provider,
+        severity: sev,
+      });
+    } else {
+      const old = found.severity === "critical" ? 2 : found.severity === "warning" ? 1 : 0;
+      if (rank > old) found.severity = sev;
+    }
+  }
+  const uniqueProviders = [...seen.values()];
+  const multiHost =
+    new Set(allProviders.map((provider) => provider.hostId)).size > 1;
+  const hostLabel =
+    [...new Set(allProviders.map((provider) => provider.hostName))]
+      .filter(Boolean)
+      .join(" · ") || null;
+  // A selected tab whose provider vanished falls back to "All".
+  const activeTab =
+    tab !== null && seen.has(tab) ? tab : null;
+  const visibleProviders =
+    activeTab === null
+      ? allProviders
+      : allProviders.filter(
+          (provider) => provider.providerId === activeTab,
+        );
+
   // Pill position: live drag > just-committed target > persisted dock > preset.
   const containerStyle: React.CSSProperties = dragPos
     ? {
@@ -1560,14 +1288,140 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
           className="overflow-hidden rounded-[10px] border border-border bg-popover shadow-xl"
           style={dockedPopupStyle}
         >
-          <UsageDashboard
-            config={config}
-            snapshot={snapshot}
-            loading={loading}
-            refresh={refresh}
-            tabs={tabs}
-            onClose={() => setOpen(false)}
-          />
+          {/* toolbar — provider tabs like the built-in panel */}
+          <div className="flex h-9 min-w-0 items-center gap-1 border-b border-border/60 px-1.5">
+            {uniqueProviders.length < 2 ? (
+              <span className="px-1.5 text-2xs font-medium">Usage</span>
+            ) : (
+              <div
+                role="tablist"
+                aria-label="Usage provider"
+                className="flex min-w-0 shrink items-center gap-0.5 overflow-x-auto"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  title="All accounts"
+                  aria-selected={activeTab === null}
+                  onClick={() => setTab(null)}
+                  className={`relative flex h-6 shrink-0 items-center justify-center rounded-md px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                    activeTab === null
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <span className="text-2xs font-medium">All</span>
+                </button>
+                {uniqueProviders.map((provider) => {
+                  const selected = provider.providerId === activeTab;
+                  const sev = provider.severity;
+                  return (
+                    <button
+                      key={provider.providerId}
+                      type="button"
+                      role="tab"
+                      title={
+                        sev === null
+                          ? provider.displayName
+                          : `${provider.displayName}: an account usage window is at least ${
+                              sev === "critical" ? "95" : "80"
+                            }% used.`
+                      }
+                      aria-label={provider.displayName}
+                      aria-selected={selected}
+                      onClick={() =>
+                        setTab(selected ? null : provider.providerId)
+                      }
+                      // severity dot hidden on the selected tab and in All view
+                      // (mirrors the built-in panel)
+
+                      className={`group/tab relative flex h-6 w-7 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        selected
+                          ? "bg-muted text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <ProviderIcon
+                        providerKind="agent"
+                        provider={provider.provider}
+                        className={`size-3.5 ${
+                          selected
+                            ? ""
+                            : "opacity-60 group-hover/tab:opacity-100"
+                        }`}
+                      />
+                      {sev !== null && !selected && activeTab !== null && (
+                        <span
+                          aria-hidden="true"
+                          className="absolute right-0.5 top-0.5 size-1.5 rounded-full ring-2 ring-popover"
+                          style={{
+                            background:
+                              sev === "critical"
+                                ? "var(--destructive, #ef4444)"
+                                : "var(--warning, #f59e0b)",
+                          }}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <span className="min-w-0 flex-1" />
+            {multiHost && (
+              <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">
+                {activeTab === null ? "All hosts" : hostLabel}
+              </span>
+            )}
+            <button
+              type="button"
+              aria-label="Reload provider usage"
+              title="Refresh now"
+              disabled={loading}
+              onClick={() => void refresh(true)}
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+            >
+              <RotateCcw spinning={loading} />
+            </button>
+            <button
+              type="button"
+              aria-label="Close"
+              title="Close"
+              onClick={() => setOpen(false)}
+              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronDown />
+            </button>
+          </div>
+          {/* body — one shared grid so columns align across providers */}
+          <div className="grid max-h-[55vh] grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-2 overflow-y-auto px-2 py-1.5">
+            {visibleProviders.map((provider) => (
+              <ProviderRows
+                key={provider.key}
+                provider={provider}
+                cfg={config}
+                showProvider={activeTab === null}
+                showHost={multiHost}
+              />
+            ))}
+            {visibleProviders.length === 0 && (
+              <p className="col-span-full py-2 text-2xs text-muted-foreground">
+                {loading ? "Loading usage…" : "No providers report usage."}
+              </p>
+            )}
+            {snapshot?.error && (
+              <p className="col-span-full py-1 text-2xs text-destructive">
+                {snapshot.error}
+              </p>
+            )}
+          </div>
+          {/* footer */}
+          <div className="border-t border-border/60 px-2.5 py-1.5 text-2xs text-muted-foreground">
+            {snapshot ? `Updated ${ago(snapshot.fetchedAt)}` : "Loading…"}
+            {config.minutes <= 0
+              ? " · manual mode"
+              : ` · every ${config.minutes}m`}
+          </div>
         </div>
       )}
       <button
@@ -1966,91 +1820,13 @@ function UsagePillSettings(_props: PluginSettingsSectionProps) {
   );
 }
 
-// ---------- the nav-panel page (the native surface, esp. on mobile) ----------
-
-/** Full-page usage dashboard — bb's own route chrome, reachable through the
- * sidebar (and the mobile drawer, which closes on activation). No overlay
- * placement conflicts at all. */
-function UsagePage(_props: PluginNavPanelProps) {
-  const sdk = useSdk();
-  const config = useOverlayConfig();
-  const { snapshot, loading, refresh } = useUsageData(
-    sdk,
-    config.minutes,
-    true,
-  );
-  const tabs = useUsageTabs(snapshot);
-  return (
-    <div className="mx-auto w-full max-w-3xl px-2 pb-4">
-      <div className="overflow-hidden rounded-[10px] border border-border bg-popover">
-        <UsageDashboard
-          config={config}
-          snapshot={snapshot}
-          loading={loading}
-          refresh={refresh}
-          tabs={tabs}
-          pageMode
-        />
-      </div>
-    </div>
-  );
-}
-
-/** Sidebar/drawer badge: the tightest remaining quota across providers — the
- * glanceable signal that makes the overlay unnecessary on mobile. */
-function useUsageBadge(): ExperimentalBadge | null {
-  const sdk = useSdk();
-  const config = useOverlayConfig();
-  const { snapshot } = useUsageData(sdk, config.minutes, true);
-  if (snapshot === null || snapshot.error !== undefined) return null;
-  let worst: { left: number; label: string } | null = null;
-  for (const provider of snapshot.providers) {
-    if (provider.status !== "ok") continue;
-    const window = headline(provider, config.headlineMode);
-    if (window === null) continue;
-    const left = remaining(window);
-    if (worst === null || left < worst.left) {
-      worst = {
-        left,
-        label: `${provider.displayName} ${window.label}: ${Math.round(left)}% left`,
-      };
-    }
-  }
-  if (worst === null) return null;
-  return {
-    text: `${Math.round(worst.left)}%`,
-    tone:
-      worst.left <= config.critBelow
-        ? "critical"
-        : worst.left <= config.warnBelow
-          ? "warning"
-          : "neutral",
-    label: worst.label,
-  };
-}
-
 export default definePluginApp((app) => {
   app.slots.experimental_appOverlay({ id: "usage-pill", component: UsagePill });
-  app.slots.navPanel({
-    id: "usage",
-    title: "Usage",
-    icon: "Activity",
-    path: "usage",
-    component: UsagePage,
-    experimental_useBadge: useUsageBadge,
-  });
   app.slots.settingsSection({
     id: "usage-pill",
     title: "Usage pill preview",
     description:
       "Live preview of the floating quota pill — click a zone to move it.",
-    component: UsagePillSettings,
-  });
-  app.slots.settingsSection({
-    experimental_page: "mobile",
-    id: "usage-mobile",
-    title: "Usage overlay",
-    description: "Pill behaviour, appearance and the Usage page.",
     component: UsagePillSettings,
   });
 });

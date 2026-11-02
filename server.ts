@@ -178,13 +178,6 @@ export default async function plugin(bb: BbPluginApi) {
         "Shrink the pill to its compact size on viewports ≤ 520px (phones, narrow windows).",
       default: true,
     },
-    overlayOnMobile: {
-      type: "boolean",
-      label: "Show overlay on small screens",
-      description:
-        "Keep the floating pill on viewports ≤ 520px. Off by default — on phones the Usage page in the sidebar drawer is the native surface and shows a live badge.",
-      default: false,
-    },
     overlayDock: {
       type: "string",
       label: "Custom dock position",
