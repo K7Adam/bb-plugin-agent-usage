@@ -190,12 +190,71 @@ function useOverlayConfig(): OverlayConfig {
 
 const SCALE: Record<
   Size,
-  { font: number; gap: number; pad: string; icon: string; showName: boolean }
+  {
+    font: number;
+    gap: number;
+    pad: string;
+    ring: number;
+    stroke: number;
+    icon: string;
+    showName: boolean;
+  }
 > = {
-  compact: { font: 10, gap: 5, pad: "3px 8px", icon: "size-2.5", showName: false },
-  comfortable: { font: 11, gap: 8, pad: "5px 12px", icon: "size-3", showName: false },
-  large: { font: 13, gap: 10, pad: "7px 16px", icon: "size-3.5", showName: true },
+  compact: { font: 10, gap: 4, pad: "4px 7px", ring: 14, stroke: 1.6, icon: "size-2", showName: false },
+  comfortable: { font: 11, gap: 6, pad: "5px 10px", ring: 17, stroke: 1.8, icon: "size-2.5", showName: false },
+  large: { font: 12, gap: 7, pad: "6px 12px", ring: 21, stroke: 2, icon: "size-3", showName: true },
 };
+
+const RING_CIRC = 2 * Math.PI * 10;
+
+function UsageRing({
+  left,
+  color,
+  size,
+  stroke,
+  children,
+}: {
+  left: number;
+  color: string;
+  size: number;
+  stroke: number;
+  children?: React.ReactNode;
+}) {
+  return (
+    <span
+      className="relative grid shrink-0 place-items-center"
+      style={{ width: size, height: size }}
+    >
+      <svg
+        viewBox="0 0 24 24"
+        className="absolute inset-0 -rotate-90"
+        aria-hidden="true"
+      >
+        <circle
+          cx="12"
+          cy="12"
+          r="10"
+          fill="none"
+          stroke="currentColor"
+          strokeOpacity="0.15"
+          strokeWidth={stroke}
+        />
+        <circle
+          cx="12"
+          cy="12"
+          r="10"
+          fill="none"
+          stroke={color}
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={RING_CIRC}
+          strokeDashoffset={RING_CIRC * (1 - left / 100)}
+        />
+      </svg>
+      {children}
+    </span>
+  );
+}
 
 function positionStyle(position: Position): React.CSSProperties {
   const base: React.CSSProperties = { position: "fixed", zIndex: 1000 };
@@ -247,19 +306,24 @@ const Chip = memo(function Chip({
   const left = remaining(window);
   return (
     <span
-      className="inline-flex items-center whitespace-nowrap"
-      style={{ gap: 4, color: tone(left) }}
+      className="inline-flex items-center gap-1 whitespace-nowrap rounded-full p-0.5 transition-colors hover:bg-muted/60"
       title={`${provider.displayName} · ${window.label}: ${left}% left${
         window.resetsAt ? ` · resets in ${countdown(window.resetsAt)}` : ""
       }`}
     >
-      <ProviderIcon
-        providerKind="agent"
-        provider={provider.provider}
-        className={scale.icon}
-      />
-      {scale.showName && <span>{provider.displayName}</span>}
-      {left}%
+      <UsageRing left={left} color={tone(left)} size={scale.ring} stroke={scale.stroke}>
+        <ProviderIcon
+          providerKind="agent"
+          provider={provider.provider}
+          className={scale.icon}
+        />
+      </UsageRing>
+      {scale.showName && (
+        <span className="text-muted-foreground">{provider.displayName}</span>
+      )}
+      {scale.showName && (
+        <span style={{ color: tone(left) }}>{left}%</span>
+      )}
     </span>
   );
 });
@@ -291,13 +355,27 @@ const ProviderRows = memo(function ProviderRows({
           return (
             <div
               key={window.label}
-              className="flex items-start justify-between pl-[18px]"
-              style={{ color: tone(left) }}
+              className="flex items-start justify-between gap-3 pl-[22px] py-0.5"
             >
-              <span className="min-w-0 flex-1 pr-3">{window.label}</span>
-              <span className="shrink-0 whitespace-nowrap text-right">
-                {left}% left
-                {window.resetsAt ? ` · ${countdown(window.resetsAt)}` : ""}
+              <span className="min-w-0 flex-1 text-muted-foreground">
+                {window.label}
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                <span className="h-1 w-14 overflow-hidden rounded-full bg-muted-foreground/20">
+                  <span
+                    className="block h-full rounded-full transition-[width] duration-500"
+                    style={{ width: `${left}%`, background: tone(left) }}
+                  />
+                </span>
+                <span
+                  className="w-7 text-right font-medium"
+                  style={{ color: tone(left) }}
+                >
+                  {left}%
+                </span>
+                <span className="w-14 text-right text-muted-foreground">
+                  {window.resetsAt ? countdown(window.resetsAt) : ""}
+                </span>
               </span>
             </div>
           );
@@ -402,13 +480,23 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
         >
           <div className="mb-2 flex items-center justify-between">
             <strong>Usage</strong>
-            <button
-              onClick={() => void refresh()}
-              className="rounded-md border border-border px-2 py-0.5 transition-colors hover:bg-muted"
-              style={{ fontSize: scale.font }}
-            >
-              {loading ? "…" : "Refresh"}
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => void refresh()}
+                className="rounded-md px-2 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                style={{ fontSize: scale.font }}
+                title="Refresh now"
+              >
+                {loading ? "…" : "↻ Refresh"}
+              </button>
+              <button
+                onClick={() => setOpen(false)}
+                className="rounded-md px-1.5 py-0.5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title="Close"
+              >
+                ✕
+              </button>
+            </div>
           </div>
           {(snapshot?.providers ?? []).map((provider) => (
             <ProviderRows key={provider.key} provider={provider} />
@@ -430,7 +518,9 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       <button
         onClick={() => setOpen((value) => !value)}
         title="Provider usage"
-        className="flex items-center rounded-full border border-border shadow-lg backdrop-blur-md"
+        className={`flex items-center border border-border/70 shadow-md backdrop-blur-xl ${
+          config.orientation === "vertical" ? "rounded-2xl" : "rounded-full"
+        }`}
         style={{
           flexDirection: config.orientation === "vertical" ? "column" : "row",
           gap: scale.gap,
@@ -544,16 +634,18 @@ function PositionPreview({
           }}
         >
           {mockChips.map((color, index) => (
-            <span
+            <UsageRing
               key={index}
-              className="inline-flex items-center gap-1 whitespace-nowrap"
+              left={[87, 42, 99][index]}
+              color={color}
+              size={scale.ring}
+              stroke={scale.stroke}
             >
               <span
-                className="inline-block size-2.5 rounded-full"
+                className="size-1 rounded-full"
                 style={{ background: color }}
               />
-              {[87, 42, 99][index]}%
-            </span>
+            </UsageRing>
           ))}
         </div>
       </div>
