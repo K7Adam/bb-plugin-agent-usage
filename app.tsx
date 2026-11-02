@@ -339,6 +339,7 @@ interface OverlayConfig {
   providers: ReadonlySet<string> | null;
   pulseCritical: boolean;
   mobileCompact: boolean;
+  dock: Dock | null;
 }
 
 function pick<T extends string>(
@@ -380,6 +381,7 @@ function useOverlayConfig(): OverlayConfig {
     providers: csv === "" ? null : new Set(csv.split(",").map((id) => id.trim()).filter(Boolean)),
     pulseCritical: values?.overlayPulseCritical === true,
     mobileCompact: values?.overlayMobileCompact !== false,
+    dock: parseDock(values?.overlayDock),
   };
 }
 
@@ -470,8 +472,17 @@ function UsageRing({
   );
 }
 
-function positionStyle(position: Position): React.CSSProperties {
-  const base: React.CSSProperties = { position: "fixed", zIndex: 1000 };
+function positionStyle(
+  position: Position,
+  reducedMotion = false,
+): React.CSSProperties {
+  const base: React.CSSProperties = {
+    position: "fixed",
+    zIndex: 1000,
+    transition: reducedMotion
+      ? "none"
+      : "left .25s ease-out, top .25s ease-out, right .25s ease-out, bottom .25s ease-out, transform .25s ease-out",
+  };
   switch (position) {
     case "top-left":
       return { ...base, top: 12, left: 12 };
@@ -487,6 +498,73 @@ function positionStyle(position: Position): React.CSSProperties {
       return { ...base, bottom: 12, right: 12 };
   }
 }
+
+type DockEdge = "left" | "right" | "top" | "bottom";
+interface Dock {
+  edge: DockEdge;
+  /** Fraction 0..1 of the viewport along the docked edge (pill centre). */
+  t: number;
+}
+
+/** "left:0.62" — written by drag, cleared when a preset is picked. */
+function parseDock(value: unknown): Dock | null {
+  if (typeof value !== "string") return null;
+  const match = /^(left|right|top|bottom):([01](?:\.\d+)?)$/.exec(value.trim());
+  if (match === null) return null;
+  const t = Number(match[2]);
+  return t >= 0 && t <= 1 ? { edge: match[1] as DockEdge, t } : null;
+}
+
+/** Edges a pill may dock to: a vertical rail hugs left/right like a chat
+ * head; a horizontal bar hugs top/bottom. */
+function dockEdgesFor(orientation: Orientation): [DockEdge, DockEdge] {
+  return orientation === "vertical" ? ["left", "right"] : ["top", "bottom"];
+}
+
+function dockStyle(dock: Dock, reducedMotion: boolean): React.CSSProperties {
+  const t = `${(dock.t * 100).toFixed(3)}%`;
+  const transition = reducedMotion
+    ? "none"
+    : "left .25s ease-out, top .25s ease-out, right .25s ease-out, bottom .25s ease-out, transform .25s ease-out";
+  const base: React.CSSProperties = {
+    position: "fixed",
+    zIndex: 1000,
+    transition,
+  };
+  switch (dock.edge) {
+    case "left":
+      return {
+        ...base,
+        left: "max(12px, env(safe-area-inset-left))",
+        top: t,
+        transform: "translateY(-50%)",
+      };
+    case "right":
+      return {
+        ...base,
+        right: "max(12px, env(safe-area-inset-right))",
+        top: t,
+        transform: "translateY(-50%)",
+      };
+    case "top":
+      return {
+        ...base,
+        top: "max(12px, env(safe-area-inset-top))",
+        left: t,
+        transform: "translateX(-50%)",
+      };
+    default:
+      return {
+        ...base,
+        bottom: "max(12px, env(safe-area-inset-bottom))",
+        left: t,
+        transform: "translateX(-50%)",
+      };
+  }
+}
+
+const clamp01 = (v: number, lo: number, hi: number) =>
+  Math.min(hi, Math.max(lo, v));
 
 function popupStyle(position: Position): React.CSSProperties {
   const style: React.CSSProperties = {
@@ -844,7 +922,34 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<string | null>(null);
   const isMobile = useMediaQuery("(max-width: 520px)");
+  const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
+  const { set: writeSetting } = useWriteSetting();
   const inFlight = useRef(false);
+  // Drag-to-dock: live position while a drag is in progress; the committed
+  // position lives in the overlayDock setting (or the preset position).
+  const pillRef = useRef<HTMLButtonElement>(null);
+  const popupRef = useRef<HTMLDivElement>(null);
+  const drag = useRef<{
+    pointerId: number;
+    sx: number;
+    sy: number;
+    grabX: number;
+    grabY: number;
+    w: number;
+    h: number;
+    moved: boolean;
+  } | null>(null);
+  const suppressClick = useRef(false);
+  const [dragPos, setDragPos] = useState<{ left: number; top: number } | null>(
+    null,
+  );
+  const [popupPos, setPopupPos] = useState<{ left: number; top: number } | null>(
+    null,
+  );
+  // Style of the just-committed drop target — keeps the pill in place while
+  // the settings write round-trips (otherwise it would jump back first).
+  const [pendingStyle, setPendingStyle] =
+    useState<React.CSSProperties | null>(null);
   const lastFetch = useRef(0);
 
   const refresh = useCallback(
@@ -923,6 +1028,164 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
     return () => document.removeEventListener("keydown", onKey);
   }, [open]);
 
+  // The pending drop target becomes stale once the settings round-trip lands.
+  // Depend on the primitive form: config.dock is a fresh object each render.
+  const dockKey = config.dock
+    ? `${config.dock.edge}:${config.dock.t}`
+    : null;
+  useEffect(() => {
+    setPendingStyle(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dockKey, config.position]);
+
+  // While docked and open, the popup is a fixed-position element clamped to
+  // the viewport — compute its spot from live rects (two-pass: hidden, then
+  // placed) so it can never slide off screen.
+  useEffect(() => {
+    if (!open || config.dock === null || dragPos !== null) return;
+    setPopupPos(null);
+    const compute = () => {
+      const pill = pillRef.current?.getBoundingClientRect();
+      const popup = popupRef.current?.getBoundingClientRect();
+      if (!pill || !popup) return;
+      const M = 8;
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      let left: number;
+      let top: number;
+      switch (config.dock?.edge) {
+        case "left":
+          left = pill.right + M;
+          top = pill.top + pill.height / 2 - popup.height / 2;
+          break;
+        case "right":
+          left = pill.left - popup.width - M;
+          top = pill.top + pill.height / 2 - popup.height / 2;
+          break;
+        case "top":
+          top = pill.bottom + M;
+          left = pill.left + pill.width / 2 - popup.width / 2;
+          break;
+        default:
+          top = pill.top - popup.height - M;
+          left = pill.left + pill.width / 2 - popup.width / 2;
+      }
+      setPopupPos({
+        left: clamp01(left, M, Math.max(M, vw - popup.width - M)),
+        top: clamp01(top, M, Math.max(M, vh - popup.height - M)),
+      });
+    };
+    const raf = requestAnimationFrame(compute);
+    window.addEventListener("resize", compute);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("resize", compute);
+    };
+  }, [open, config.dock, dragPos]);
+
+  /** Committed dock drop: snap to a nearby preset zone or to the nearest
+   * orientation-appropriate edge at the drop height — chat-head style. */
+  const commitDrop = useCallback(
+    (left: number, top: number, w: number, h: number) => {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const cx = left + w / 2;
+      const cy = top + h / 2;
+      // Preset anchors ≈ where the pill centre sits for each preset.
+      const anchors: { position: Position; x: number; y: number }[] = [
+        { position: "top-left", x: 12 + w / 2, y: 12 + h / 2 },
+        { position: "top-center", x: vw / 2, y: 12 + h / 2 },
+        { position: "top-right", x: vw - 12 - w / 2, y: 12 + h / 2 },
+        { position: "bottom-left", x: 12 + w / 2, y: vh - 12 - h / 2 },
+        { position: "bottom-center", x: vw / 2, y: vh - 12 - h / 2 },
+        { position: "bottom-right", x: vw - 12 - w / 2, y: vh - 12 - h / 2 },
+      ];
+      let nearest: { position: Position; dist: number } | null = null;
+      for (const anchor of anchors) {
+        const dist = Math.hypot(anchor.x - cx, anchor.y - cy);
+        if (nearest === null || dist < nearest.dist) {
+          nearest = { position: anchor.position, dist };
+        }
+      }
+      // Within ~64px of a preset slot → adopt the preset (clears the dock).
+      if (nearest !== null && nearest.dist <= 64) {
+        setPendingStyle(positionStyle(nearest.position, reducedMotion));
+        void writeSetting("overlayDock", "").then(() =>
+          writeSetting("overlayPosition", nearest!.position),
+        );
+        return;
+      }
+      const vertical = config.orientation === "vertical";
+      const edge: DockEdge = vertical
+        ? cx < vw / 2
+          ? "left"
+          : "right"
+        : cy < vh / 2
+          ? "top"
+          : "bottom";
+      const half = vertical ? h / 2 : w / 2;
+      const span = vertical ? vh : vw;
+      const raw = vertical ? cy : cx;
+      const t = clamp01(raw / span, (half + 12) / span, 1 - (half + 12) / span);
+      setPendingStyle(dockStyle({ edge, t }, reducedMotion));
+      void writeSetting("overlayDock", `${edge}:${t.toFixed(4)}`);
+    },
+    [config.orientation, writeSetting, reducedMotion],
+  );
+
+  const onPillPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    const rect = pillRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    drag.current = {
+      pointerId: event.pointerId,
+      sx: event.clientX,
+      sy: event.clientY,
+      grabX: event.clientX - rect.left,
+      grabY: event.clientY - rect.top,
+      w: rect.width,
+      h: rect.height,
+      moved: false,
+    };
+    pillRef.current?.setPointerCapture(event.pointerId);
+  };
+  const onPillPointerMove = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const d = drag.current;
+    if (d === null || event.pointerId !== d.pointerId) return;
+    if (!d.moved) {
+      // Drag threshold: a tap (<= 6px) must still toggle the popup.
+      if (Math.hypot(event.clientX - d.sx, event.clientY - d.sy) < 6) return;
+      d.moved = true;
+      setOpen(false);
+    }
+    // Keep at least 24px of the pill on screen while dragging.
+    setDragPos({
+      left: clamp01(
+        event.clientX - d.grabX,
+        -d.w + 24,
+        window.innerWidth - 24,
+      ),
+      top: clamp01(
+        event.clientY - d.grabY,
+        -d.h + 24,
+        window.innerHeight - 24,
+      ),
+    });
+  };
+  const onPillPointerUp = (event: React.PointerEvent<HTMLButtonElement>) => {
+    const d = drag.current;
+    if (d === null || event.pointerId !== d.pointerId) return;
+    drag.current = null;
+    if (!d.moved) {
+      setDragPos(null);
+      return;
+    }
+    suppressClick.current = true;
+    const rect = pillRef.current?.getBoundingClientRect();
+    setDragPos(null);
+    if (rect) commitDrop(rect.left, rect.top, rect.width, rect.height);
+  };
+
   if (!config.enabled) return null;
   if (snapshot === null && !loading) return null;
 
@@ -979,10 +1242,37 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
           (provider) => provider.providerId === activeTab,
         );
 
+  // Pill position: live drag > just-committed target > persisted dock > preset.
+  const containerStyle: React.CSSProperties = dragPos
+    ? {
+        position: "fixed",
+        left: dragPos.left,
+        top: dragPos.top,
+        zIndex: 1002,
+        transition: "none",
+      }
+    : (pendingStyle ??
+      (config.dock !== null
+        ? dockStyle(config.dock, reducedMotion)
+        : positionStyle(config.position, reducedMotion)));
+  // Docked popup: fixed + viewport-clamped; preset popup: anchored to the pill.
+  const dockedPopupStyle: React.CSSProperties =
+    config.dock !== null
+      ? {
+          position: "fixed",
+          left: popupPos?.left ?? 0,
+          top: popupPos?.top ?? 0,
+          width: "min(300px, calc(100vw - 24px))",
+          maxHeight: "calc(100vh - 16px)",
+          zIndex: 1001,
+          visibility: popupPos === null ? "hidden" : "visible",
+        }
+      : popupStyle(config.position);
+
   return (
     <div
       className="text-foreground"
-      style={{ ...positionStyle(config.position), fontSize: scale.font }}
+      style={{ ...containerStyle, fontSize: scale.font }}
     >
       {open && (
         <div
@@ -992,10 +1282,11 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       )}
       {open && (
         <div
+          ref={popupRef}
           role="dialog"
           aria-label="Provider usage"
           className="overflow-hidden rounded-[10px] border border-border bg-popover shadow-xl"
-          style={popupStyle(config.position)}
+          style={dockedPopupStyle}
         >
           {/* toolbar — provider tabs like the built-in panel */}
           <div className="flex h-9 min-w-0 items-center gap-1 border-b border-border/60 px-1.5">
@@ -1134,7 +1425,52 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
         </div>
       )}
       <button
+        ref={pillRef}
+        onPointerDown={onPillPointerDown}
+        onPointerMove={onPillPointerMove}
+        onPointerUp={onPillPointerUp}
+        onPointerCancel={() => {
+          drag.current = null;
+          setDragPos(null);
+        }}
+        onKeyDown={(event) => {
+          // Keyboard alternative to dragging: arrows move a docked pill.
+          if (config.dock === null) return;
+          const vertical = config.orientation === "vertical";
+          const step = event.shiftKey ? 0.1 : 0.03;
+          const along = vertical
+            ? ["ArrowUp", "ArrowDown"]
+            : ["ArrowLeft", "ArrowRight"];
+          const across = vertical
+            ? ["ArrowLeft", "ArrowRight"]
+            : ["ArrowUp", "ArrowDown"];
+          const dock = config.dock;
+          if (event.key === along[0]) {
+            event.preventDefault();
+            void writeSetting(
+              "overlayDock",
+              `${dock.edge}:${clamp01(dock.t - step, 0.03, 0.97).toFixed(4)}`,
+            );
+          } else if (event.key === along[1]) {
+            event.preventDefault();
+            void writeSetting(
+              "overlayDock",
+              `${dock.edge}:${clamp01(dock.t + step, 0.03, 0.97).toFixed(4)}`,
+            );
+          } else if (across.includes(event.key)) {
+            event.preventDefault();
+            const [e1, e2] = dockEdgesFor(config.orientation);
+            void writeSetting(
+              "overlayDock",
+              `${event.key === across[0] ? e1 : e2}:${dock.t.toFixed(4)}`,
+            );
+          }
+        }}
         onClick={(event) => {
+          if (suppressClick.current) {
+            suppressClick.current = false;
+            return;
+          }
           const chipId = (event.target as Element)
             .closest("[data-provider-id]")
             ?.getAttribute("data-provider-id");
@@ -1158,9 +1494,13 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
           background:
             "color-mix(in srgb, var(--popover, #18181b) 88%, transparent)",
           color: "inherit",
-          cursor: "pointer",
+          // touch-action:none keeps touch drags from scrolling the page.
+          touchAction: "none",
+          cursor: dragPos ? "grabbing" : "grab",
           fontSize: scale.font,
           opacity: config.opacity / 100,
+          scale: dragPos ? "1.06" : "1",
+          transition: reducedMotion ? "none" : "scale .15s ease-out",
         }}
       >
         {chips?.length ? (
@@ -1236,6 +1576,17 @@ function PositionPreview({
   };
   const mockLefts = [85, 15, 3];
   const mockTints = ["#D97757", "#10a37f", "#8b5cf6"];
+  // A dragged dock overrides the preset slot — draw the marker at its edge.
+  const dockAnchor: React.CSSProperties | null =
+    config.dock === null
+      ? null
+      : config.dock.edge === "left"
+        ? { top: `${config.dock.t * 100}%`, left: "3%", transform: "translateY(-50%)" }
+        : config.dock.edge === "right"
+          ? { top: `${config.dock.t * 100}%`, right: "3%", transform: "translateY(-50%)" }
+          : config.dock.edge === "top"
+            ? { left: `${config.dock.t * 100}%`, top: "6%", transform: "translateX(-50%)" }
+            : { left: `${config.dock.t * 100}%`, bottom: "6%", transform: "translateX(-50%)" };
   return (
     <div className="relative h-44 overflow-hidden rounded-b-xl bg-muted/20">
       {/* fake window chrome */}
@@ -1255,10 +1606,10 @@ function PositionPreview({
           style={hotspot[position]}
         />
       ))}
-      {/* the mock pill */}
+      {/* the mock pill — docked position wins over the preset slot */}
       <div
         className="absolute z-20 transition-all duration-300 ease-out"
-        style={anchor[config.position]}
+        style={dockAnchor ?? anchor[config.position]}
       >
         <div
           className="flex items-center rounded-full border border-border bg-popover/90 shadow-md backdrop-blur-sm"
@@ -1446,7 +1797,12 @@ function UsagePillSettings(_props: PluginSettingsSectionProps) {
         <div className={disabled ? "pointer-events-none opacity-40" : ""}>
           <PositionPreview
             config={config}
-            onPick={(position) => void set("overlayPosition", position)}
+            onPick={(position) => {
+              // A preset choice clears any dragged dock position.
+              void set("overlayDock", "").then(() =>
+                set("overlayPosition", position),
+              );
+            }}
           />
         </div>
         <div className="border-t border-border/60 px-4 py-2 text-2xs text-muted-foreground">

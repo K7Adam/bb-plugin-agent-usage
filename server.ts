@@ -178,6 +178,13 @@ export default async function plugin(bb: BbPluginApi) {
         "Shrink the pill to its compact size on viewports ≤ 520px (phones, narrow windows).",
       default: true,
     },
+    overlayDock: {
+      type: "string",
+      label: "Custom dock position",
+      description:
+        "Written automatically when you drag the pill — format edge:fraction (e.g. right:0.62). Clear to return to the preset position.",
+      default: "",
+    },
     overlayProviders: {
       type: "string",
       label: "Providers shown in the pill",
