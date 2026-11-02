@@ -3,7 +3,14 @@
 // interval. Click opens a popup with every limit window and a refresh
 // button. Position, orientation, size and cadence are plugin settings,
 // edited in a settings section with a live, interactive preview.
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   definePluginApp,
   experimental_ProviderIcon,
@@ -368,6 +375,12 @@ function pick<T extends string>(
 
 function useOverlayConfig(): OverlayConfig {
   const { values } = useSettings();
+  // Memoized on the setting string: a fresh object each render would
+  // invalidate every effect that depends on the dock identity.
+  const dock = useMemo(
+    () => parseDock(values?.overlayDock),
+    [values?.overlayDock],
+  );
   const csv =
     typeof values?.overlayProviders === "string"
       ? values.overlayProviders.trim()
@@ -394,7 +407,7 @@ function useOverlayConfig(): OverlayConfig {
     providers: csv === "" ? null : new Set(csv.split(",").map((id) => id.trim()).filter(Boolean)),
     pulseCritical: values?.overlayPulseCritical === true,
     mobileCompact: values?.overlayMobileCompact !== false,
-    dock: parseDock(values?.overlayDock),
+    dock,
   };
 }
 
@@ -982,10 +995,16 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
     w: number;
     h: number;
     moved: boolean;
+    /** Drag threshold — bigger on touch (Android slop ≈ 8-10dp) so a firm
+     * tap's jitter doesn't read as a drag and swallow the click. */
+    slop: number;
     /** Trailing pointer samples — the web VelocityTracker for fling-dock. */
     samples: PointSample[];
   } | null>(null);
-  const suppressClick = useRef(false);
+  // Click suppression after a drag is timestamp-based: relying on a click
+  // event arriving to clear a flag can strand it when capture eats the click,
+  // which would swallow every later tap.
+  const suppressUntil = useRef(0);
   const [dragPos, setDragPos] = useState<{
     left: number;
     top: number;
@@ -1153,7 +1172,8 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
     };
     const raf = requestAnimationFrame(compute);
     return () => cancelAnimationFrame(raf);
-  }, [open, config.dock, config.position, dragPos, vp]);
+    // Primitive deps only — object deps (config.dock, vp) would re-run this
+  }, [open, dockKey, config.position, dragPos !== null, vp.w, vp.h, vp.offX, vp.offY]);
 
   // Keep a live drag inside the visible box if the viewport changes
   // mid-gesture (orientation flip, keyboard animation).
@@ -1230,6 +1250,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       w: rect.width,
       h: rect.height,
       moved: false,
+      slop: event.pointerType === "touch" ? 10 : 6,
       samples: [{ t: event.timeStamp, x: event.clientX, y: event.clientY }],
     };
     pillRef.current?.setPointerCapture(event.pointerId);
@@ -1238,8 +1259,9 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
     const d = drag.current;
     if (d === null || event.pointerId !== d.pointerId) return;
     if (!d.moved) {
-      // Drag threshold: a tap (<= 6px) must still toggle the popup.
-      if (Math.hypot(event.clientX - d.sx, event.clientY - d.sy) < 6) return;
+      // Below the slop threshold a press must still toggle the popup.
+      if (Math.hypot(event.clientX - d.sx, event.clientY - d.sy) < d.slop)
+        return;
       d.moved = true;
       setOpen(false);
     }
@@ -1269,7 +1291,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       setDragPos(null);
       return;
     }
-    suppressClick.current = true;
+    suppressUntil.current = event.timeStamp + 450;
     // The release point is the final velocity sample (VelocityTracker does
     // the same — a stationary lift decays the fling to zero).
     d.samples.push({ t: event.timeStamp, x: event.clientX, y: event.clientY });
@@ -1601,10 +1623,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
           }
         }}
         onClick={(event) => {
-          if (suppressClick.current) {
-            suppressClick.current = false;
-            return;
-          }
+          if (event.timeStamp < suppressUntil.current) return;
           const chipId = (event.target as Element)
             .closest("[data-provider-id]")
             ?.getAttribute("data-provider-id");
