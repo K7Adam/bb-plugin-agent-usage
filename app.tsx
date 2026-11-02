@@ -407,6 +407,10 @@ function UsageRing({
           strokeLinecap={left >= 99.5 ? "butt" : "round"}
           strokeDasharray={RING_CIRC}
           strokeDashoffset={RING_CIRC * (1 - left / 100)}
+          style={{
+            transition:
+              "stroke-dashoffset 600ms ease-out, stroke 300ms ease",
+          }}
         />
       </svg>
       {children}
@@ -555,7 +559,7 @@ const Chip = memo(function Chip({
         )}
         {cfg.iconMode === "dot" && (
           <span
-            className="size-1 rounded-full"
+            className="size-1 rounded-full transition-colors duration-300"
             style={{ background: color }}
           />
         )}
@@ -566,7 +570,12 @@ const Chip = memo(function Chip({
         </span>
       )}
         {(scale.showName || cfg.showPercent) && !failed && (
-          <span style={{ color }}>{left}%</span>
+          <span
+            className="transition-colors duration-300"
+            style={{ color }}
+          >
+            {left}%
+          </span>
         )}
       </span>
     </HoverTip>
