@@ -99,19 +99,6 @@ function tone(
     : "var(--foreground, #e4e4e7)";
 }
 
-function countdown(resetsAt: string | null): string {
-  if (resetsAt === null) return "";
-  const ms = new Date(resetsAt).getTime() - Date.now();
-  if (!Number.isFinite(ms)) return "";
-  if (ms <= 0) return "now";
-  const minutes = Math.floor(ms / 60_000);
-  const days = Math.floor(minutes / 1440);
-  const hours = Math.floor((minutes % 1440) / 60);
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes % 60}m`;
-  return minutes > 0 ? `${minutes}m` : "<1m";
-}
-
 /** Compact reset text like the built-in panel: "4h 39m", "6d 11h", "—". */
 function resetShort(resetsAt: string | null): string {
   if (resetsAt === null) return "—";
@@ -417,7 +404,7 @@ function UsageRing({
           fill="none"
           stroke={color}
           strokeWidth={stroke}
-          strokeLinecap="round"
+          strokeLinecap={left >= 99.5 ? "butt" : "round"}
           strokeDasharray={RING_CIRC}
           strokeDashoffset={RING_CIRC * (1 - left / 100)}
         />
@@ -528,23 +515,35 @@ const Chip = memo(function Chip({
   cfg: OverlayConfig;
 }) {
   const window = headline(provider, cfg.headlineMode);
-  if (window === null) return null;
-  const left = remaining(window);
-  const color = tone(left, cfg);
-  const critical = cfg.pulseCritical && left <= cfg.critBelow;
+  const failed = provider.status !== "ok";
+  if (window === null && !failed) return null;
+  const left = window === null ? 0 : remaining(window);
+  const color = failed
+    ? "var(--muted-foreground, #71717a)"
+    : tone(left, cfg);
+  const critical = !failed && cfg.pulseCritical && left <= cfg.critBelow;
   return (
     <HoverTip
       cfg={cfg}
       label={provider.displayName}
-      detail={`${window.label} · ${left}% left${
-        window.resetsAt ? ` · resets in ${countdown(window.resetsAt)}` : ""
-      }`}
+      detail={
+        failed
+          ? statusText(provider)
+          : `${window!.label} · ${left}% left${
+              window!.resetsAt
+                ? ` · resets in ${resetShort(window!.resetsAt)}`
+                : ""
+            }`
+      }
     >
       <span
-        aria-label={`${provider.displayName} · ${window.label}: ${left}% left`}
+        data-provider-id={provider.providerId}
+        aria-label={`${provider.displayName} · ${
+          failed ? statusText(provider) : `${window!.label}: ${left}% left`
+        }`}
         className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full p-0.5 transition-colors hover:bg-muted/60 ${
           critical ? "animate-pulse" : ""
-        }`}
+        } ${failed ? "opacity-50" : ""}`}
       >
       <UsageRing left={left} color={color} size={scale.ring} stroke={scale.stroke}>
         {cfg.iconMode === "icon" && (
@@ -562,9 +561,11 @@ const Chip = memo(function Chip({
         )}
       </UsageRing>
       {scale.showName && (
-        <span className="text-muted-foreground">{provider.displayName}</span>
+        <span className="max-w-24 truncate text-muted-foreground">
+          {provider.displayName}
+        </span>
       )}
-        {(scale.showName || cfg.showPercent) && (
+        {(scale.showName || cfg.showPercent) && !failed && (
           <span style={{ color }}>{left}%</span>
         )}
       </span>
@@ -838,8 +839,8 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   const allProviders = snapshot?.providers ?? [];
   const chips = allProviders.filter(
     (provider) =>
-      provider.status === "ok" &&
-      headline(provider, config.headlineMode) !== null &&
+      (provider.status !== "ok" ||
+        headline(provider, config.headlineMode) !== null) &&
       (config.providers === null || config.providers.has(provider.providerId)),
   );
 
@@ -1041,7 +1042,19 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
         </div>
       )}
       <button
-        onClick={() => setOpen((value) => !value)}
+        onClick={(event) => {
+          const chipId = (event.target as Element)
+            .closest("[data-provider-id]")
+            ?.getAttribute("data-provider-id");
+          if (chipId) {
+            // Click a chip → popup opens already filtered to that provider.
+            setTab(chipId);
+            setOpen(true);
+          } else {
+            if (!open) setTab(null);
+            setOpen((value) => !value);
+          }
+        }}
         aria-label="Provider usage"
         className={`flex items-center border border-border/70 shadow-md backdrop-blur-xl ${
           config.orientation === "vertical" ? "rounded-2xl" : "rounded-full"

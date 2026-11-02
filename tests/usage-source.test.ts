@@ -83,7 +83,7 @@ test("fills account fields for bare statuses", async () => {
   assert.equal(result.usage.planLabel, null);
 });
 
-test("caches good results for five minutes and throttles manual refreshes", async () => {
+test("caches good results for the cache window and throttles manual refreshes", async () => {
   const { handlers, calls, advance } = setup({ "devin-cli": devinOk });
   await get(handlers, "devin-cli", false);
   advance(CACHE_MS - 1);
