@@ -13,7 +13,7 @@ export const LIST_RESOURCES = "provider-usage.v1.listResources";
 export const GET_RESOURCE = "provider-usage.v1.getResource";
 
 /** Background reads reuse a good result this long; agy takes seconds per read. */
-export const CACHE_MS = 5 * 60_000;
+export const CACHE_MS = 110_000;
 /** A manual refresh inside this window returns the result it would repeat. */
 export const MIN_REFRESH_MS = 30_000;
 

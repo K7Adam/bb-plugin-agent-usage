@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   classifyAgyError,
   findUsageEnvelope,
+  FRESH_OK_MS,
+  FRESH_OTHER_MS,
   isFresh,
   isModelTurn,
   isSupportedVersion,
@@ -84,14 +86,14 @@ test("requires agy 1.1.11 or newer", () => {
   assert.equal(isSupportedVersion([0, 9, 0]), false);
 });
 
-test("keeps good results fresh for four minutes and others for one", () => {
+test("keeps good results fresh for the ok window and others for one minute", () => {
   const ok: Parameters<typeof isFresh>[0] = {
     at: 0,
     result: { supported: true, usage: { status: "ok", accountEmail: null, planLabel: null, windows: [] } },
   };
   const failed: Parameters<typeof isFresh>[0] = { at: 0, result: { supported: true, usage: { status: "unauthenticated" } } };
-  assert.equal(isFresh(ok, 4 * 60_000 - 1), true);
-  assert.equal(isFresh(ok, 4 * 60_000), false);
-  assert.equal(isFresh(failed, 59_999), true);
-  assert.equal(isFresh(failed, 60_000), false);
+  assert.equal(isFresh(ok, FRESH_OK_MS - 1), true);
+  assert.equal(isFresh(ok, FRESH_OK_MS), false);
+  assert.equal(isFresh(failed, FRESH_OTHER_MS - 1), true);
+  assert.equal(isFresh(failed, FRESH_OTHER_MS), false);
 });

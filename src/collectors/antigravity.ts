@@ -27,10 +27,13 @@ interface ExecResult {
 
 function run(file: string, args: string[], timeout: number): Promise<ExecResult> {
   return new Promise((resolve) => {
+    // No windowsHide on purpose: without it libuv spawns with CREATE_NO_WINDOW,
+    // so no console is allocated at all. A hidden console (SW_HIDE) can still
+    // flash a window when Windows Terminal is the delegated default terminal.
     execFile(
       file,
       args,
-      { timeout, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true, encoding: "utf8" },
+      { timeout, maxBuffer: MAX_OUTPUT_BYTES, encoding: "utf8" },
       (error, stdout, stderr) => resolve({ stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), failed: error !== null }),
     );
   });
@@ -166,18 +169,30 @@ export function isModelTurn(envelope: Json): boolean {
   return (Number.isFinite(turns) && turns > 0) || (typeof conversation === "string" && conversation !== "");
 }
 
-async function runUsageCommand(): Promise<ProviderUsageResult> {
+interface VerifiedAgy {
+  path: string;
+  version: number[];
+}
+
+async function runUsageCommand(knownAgy: VerifiedAgy | null): Promise<{ result: ProviderUsageResult; agy: VerifiedAgy | null }> {
+  const fail = (result: ProviderUsageResult) => ({ result, agy: knownAgy });
   if (usageCommandUnsupported) {
-    return usageError("agy answered /usage with a model turn; usage reads are paused until bb restarts.");
+    return fail(usageError("agy answered /usage with a model turn; usage reads are paused until bb restarts."));
   }
   const agy = await findAgy();
-  if (agy === null) return usageError("The agy CLI was not found. Install Antigravity's agy CLI to read usage.");
+  if (agy === null) return fail(usageError("The agy CLI was not found. Install Antigravity's agy CLI to read usage."));
 
-  const versionRun = await run(agy, ["--version"], VERSION_TIMEOUT_MS);
-  const version = parseVersion(`${versionRun.stdout}\n${versionRun.stderr}`);
+  // The version gate runs once per agy binary; a verified version persists in
+  // the cache file, so reads after the first spawn agy only once.
+  let version = knownAgy?.path === agy ? knownAgy.version : null;
   if (version === null || !isSupportedVersion(version)) {
-    return usageError(`agy ${MIN_AGY_VERSION.join(".")} or newer is required to read usage.`);
+    const versionRun = await run(agy, ["--version"], VERSION_TIMEOUT_MS);
+    version = parseVersion(`${versionRun.stdout}\n${versionRun.stderr}`);
+    if (version === null || !isSupportedVersion(version)) {
+      return fail(usageError(`agy ${MIN_AGY_VERSION.join(".")} or newer is required to read usage.`));
+    }
   }
+  const verified: VerifiedAgy = { path: agy, version };
 
   const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--print-timeout", "20s"], USAGE_TIMEOUT_MS);
   const envelope = findUsageEnvelope(result.stdout);
@@ -185,28 +200,32 @@ async function runUsageCommand(): Promise<ProviderUsageResult> {
 
   if (envelope !== null && isModelTurn(envelope)) {
     usageCommandUnsupported = true;
-    return usageError("agy answered /usage with a model turn; usage reads are paused until bb restarts.");
+    return { result: usageError("agy answered /usage with a model turn; usage reads are paused until bb restarts."), agy: verified };
   }
   if (envelope !== null && envelope.status === "SUCCESS" && record(envelope.command)?.name === "usage") {
-    return mapAgyUsage(envelope);
+    return { result: mapAgyUsage(envelope), agy: verified };
   }
-  if (classified !== null) return classified;
-  if (result.failed && envelope === null) return usageError("agy did not answer the usage request in time.");
-  return usageError("agy returned no usage information.");
+  if (classified !== null) return { result: classified, agy: verified };
+  if (result.failed && envelope === null) return { result: usageError("agy did not answer the usage request in time."), agy: verified };
+  return { result: usageError("agy returned no usage information."), agy: verified };
 }
 
 // `agy /usage` takes 20–30 s, and bb gives a provider/usage request 30 s. So the
 // last result is kept in a file (bridge processes exit when idle), a read
 // returns it while fresh, and otherwise waits a bounded time for a new read
 // that keeps running and fills the file for the next request.
-const FRESH_OK_MS = 4 * 60_000;
-const FRESH_OTHER_MS = 60_000;
+// Slightly below the overlay's default 2-minute poll so each pill refresh
+// actually re-reads agy instead of serving the previous snapshot.
+export const FRESH_OK_MS = 110_000;
+export const FRESH_OTHER_MS = 60_000;
 const WAIT_FOR_READ_MS = 22_000;
 const READ_CLAIM_MS = 60_000;
 
 export interface CachedUsage {
   at: number;
   result: ProviderUsageResult;
+  /** agy binary that served the last read and its version; lets later reads skip `--version`. */
+  agy?: VerifiedAgy;
 }
 
 export function usageCacheDir(): string {
@@ -219,16 +238,20 @@ const claimFile = (): string => path.join(usageCacheDir(), "antigravity-usage.cl
 async function readCache(): Promise<CachedUsage | null> {
   try {
     const parsed = JSON.parse(await readFile(cacheFile(), "utf8")) as CachedUsage;
-    return typeof parsed.at === "number" && typeof parsed.result === "object" ? parsed : null;
+    if (typeof parsed.at !== "number" || typeof parsed.result !== "object") return null;
+    if (parsed.agy !== undefined && (typeof parsed.agy.path !== "string" || !Array.isArray(parsed.agy.version))) {
+      delete parsed.agy;
+    }
+    return parsed;
   } catch {
     return null;
   }
 }
 
-async function writeCache(result: ProviderUsageResult, now: number): Promise<void> {
+async function writeCache(result: ProviderUsageResult, now: number, agy: VerifiedAgy | null): Promise<void> {
   await mkdir(usageCacheDir(), { recursive: true });
   const temporary = `${cacheFile()}.${process.pid}.tmp`;
-  await writeFile(temporary, JSON.stringify({ at: now, result } satisfies CachedUsage));
+  await writeFile(temporary, JSON.stringify({ at: now, result, ...(agy === null ? {} : { agy }) } satisfies CachedUsage));
   await rename(temporary, cacheFile());
 }
 
@@ -252,10 +275,10 @@ export function isFresh(cached: CachedUsage, now: number): boolean {
 
 let inFlight: Promise<ProviderUsageResult> | null = null;
 
-function startRead(): Promise<ProviderUsageResult> {
-  inFlight ??= runUsageCommand()
-    .then(async (result) => {
-      await writeCache(result, Date.now()).catch(() => undefined);
+function startRead(knownAgy: VerifiedAgy | null): Promise<ProviderUsageResult> {
+  inFlight ??= runUsageCommand(knownAgy)
+    .then(async ({ result, agy }) => {
+      await writeCache(result, Date.now(), agy).catch(() => undefined);
       return result;
     })
     .finally(async () => {
@@ -274,7 +297,7 @@ export async function readAntigravityUsage(): Promise<ProviderUsageResult> {
     // Another bridge process is reading; serve what there is.
     return cached?.result ?? usageError("Antigravity usage is loading; it appears on the next refresh.");
   }
-  const read = startRead();
+  const read = startRead(cached?.agy ?? null);
   const timedOut = Symbol("timedOut");
   let timer: NodeJS.Timeout | undefined;
   const outcome = await Promise.race([
