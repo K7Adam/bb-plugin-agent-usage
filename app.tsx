@@ -23,6 +23,7 @@ import type {
   ExperimentalAppOverlayProps,
   PluginSettingsSectionProps,
 } from "@get-bb/plugin-sdk/app";
+import { mergeSameAccounts } from "./src/usage-dedupe.ts";
 import {
   clamp,
   clampDrag,
@@ -68,6 +69,8 @@ interface ProviderEntry {
   planLabel: string | null;
   accountEmail: string | null;
   windows: UsageWindow[];
+  /** Other hosts that report this same account (merged into this entry). */
+  alsoOnHosts: string[];
   provider: {
     id: string;
     logoUrl?: string | null;
@@ -249,7 +252,7 @@ async function loadSnapshot(
   sdk: ReturnType<typeof useSdk>,
   force = false,
 ): Promise<Snapshot> {
-  const providers: ProviderEntry[] = [];
+  const providers: Omit<ProviderEntry, "alsoOnHosts">[] = [];
   let error: string | null = null;
   let hosts: Awaited<ReturnType<typeof sdk.hosts.list>> = [];
   try {
@@ -317,8 +320,13 @@ async function loadSnapshot(
         }
       }),
   );
-  providers.sort((a, b) => a.displayName.localeCompare(b.displayName));
-  return { providers, fetchedAt: Date.now(), error };
+  // The same account signed in on several hosts is one quota: show it once.
+  const merged = mergeSameAccounts(
+    providers,
+    hosts.map((host) => host.id),
+  );
+  merged.sort((a, b) => a.displayName.localeCompare(b.displayName));
+  return { providers: merged, fetchedAt: Date.now(), error };
 }
 
 // ---------- configuration ----------
@@ -706,11 +714,15 @@ const Chip = memo(function Chip({
   provider,
   scale,
   cfg,
+  hostHint,
 }: {
   provider: ProviderEntry;
   scale: (typeof SCALE)[Size];
   cfg: OverlayConfig;
+  /** Set when this provider has chips for different accounts. */
+  hostHint: string | null;
 }) {
+  const name = hostHint ? `${provider.displayName} · ${hostHint}` : provider.displayName;
   const window = headline(provider, cfg.headlineMode);
   const failed = provider.status !== "ok";
   if (window === null && !failed) return null;
@@ -722,7 +734,7 @@ const Chip = memo(function Chip({
   return (
     <HoverTip
       cfg={cfg}
-      label={provider.displayName}
+      label={name}
       detail={
         failed
           ? statusText(provider)
@@ -735,7 +747,7 @@ const Chip = memo(function Chip({
     >
       <span
         data-provider-id={provider.providerId}
-        aria-label={`${provider.displayName} · ${
+        aria-label={`${name} · ${
           failed ? statusText(provider) : `${window!.label}: ${left}% left`
         }`}
         className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full p-0.5 transition-colors hover:bg-muted/60 ${
@@ -902,9 +914,16 @@ const ProviderRows = memo(function ProviderRows({
         >
           {label}
         </h3>
-        {showHost && provider.hostName && (
-          <span className="shrink-0 truncate text-2xs text-muted-foreground">
-            {provider.hostName}
+        {(showHost || provider.alsoOnHosts.length > 0) && provider.hostName && (
+          <span
+            title={
+              provider.alsoOnHosts.length > 0
+                ? "Same account on these machines, counted once"
+                : undefined
+            }
+            className="shrink-0 truncate text-2xs text-muted-foreground"
+          >
+            {[provider.hostName, ...provider.alsoOnHosts].join(" · ")}
           </span>
         )}
         {provider.planLabel && (
@@ -1318,6 +1337,11 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
         headline(provider, config.headlineMode) !== null) &&
       (config.providers === null || config.providers.has(provider.providerId)),
   );
+  // Providers that still have several chips are different accounts: name the host.
+  const chipsPerProvider = new Map<string, number>();
+  for (const chip of chips) {
+    chipsPerProvider.set(chip.providerId, (chipsPerProvider.get(chip.providerId) ?? 0) + 1);
+  }
 
   // Popup tab model: one tab per unique providerId (like the built-in panel).
   const seen = new Map<
@@ -1667,6 +1691,11 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
               provider={provider}
               scale={scale}
               cfg={config}
+              hostHint={
+                (chipsPerProvider.get(provider.providerId) ?? 0) > 1
+                  ? provider.hostName
+                  : null
+              }
             />
           ))
         ) : (

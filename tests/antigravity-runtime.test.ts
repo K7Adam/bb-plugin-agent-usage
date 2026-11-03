@@ -148,11 +148,15 @@ test("keeps a folder a running process holds", { skip: process.platform !== "win
   const root = await scratch(t);
   const dir = await extraction(root, "_MEI1", true);
   // A process whose working folder is inside blocks the rename, like a running server does.
-  const holder = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)"], { cwd: dir, stdio: "ignore" });
+  const holder = spawn(process.execPath, ["-e", "process.stdout.write('ready'); setTimeout(() => {}, 30000)"], {
+    cwd: dir,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
   t.after(() => {
     holder.kill();
   });
-  await new Promise((resolve) => holder.once("spawn", resolve));
+  // "spawn" fires before the child runs; wait until it reports in from inside the folder.
+  await new Promise((resolve) => holder.stdout.once("data", resolve));
   const result = await sweepExtractions(root, { now: later() });
   assert.deepEqual(result, { removed: [], kept: ["_MEI1"] });
   assert.deepEqual(await readdir(root), ["_MEI1"]);
