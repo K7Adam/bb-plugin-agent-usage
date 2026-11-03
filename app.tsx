@@ -1624,9 +1624,13 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
         }}
         onClick={(event) => {
           if (event.timeStamp < suppressUntil.current) return;
-          const chipId = (event.target as Element)
-            .closest("[data-provider-id]")
-            ?.getAttribute("data-provider-id");
+          // On mobile the chips are too small to tap reliably — any tap
+          // opens the unfiltered "All" view instead of a provider tab.
+          const chipId = isMobile
+            ? null
+            : (event.target as Element)
+                .closest("[data-provider-id]")
+                ?.getAttribute("data-provider-id");
           if (chipId) {
             // Click a chip → popup opens already filtered to that provider.
             setTab(chipId);
