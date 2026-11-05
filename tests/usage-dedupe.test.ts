@@ -94,17 +94,99 @@ test("does not merge fresh accounts that carry no reset time", () => {
   assert.equal(merged.length, 2);
 });
 
-test("never merges errors and never merges entries of one host", () => {
+test("never merges entries of one host", () => {
+  const merged = mergeSameAccounts(
+    [entry({ providerId: "codex" }), entry({ providerId: "codex" })],
+    ORDER,
+  );
+  assert.equal(merged.length, 2);
+});
+
+test("shows a provider that fails on every host once, with the other hosts as issues", () => {
   const merged = mergeSameAccounts(
     [
-      entry({ status: "error", windows: [] }),
-      entry({ hostId: "host_omen", status: "error", windows: [] }),
-      entry({ providerId: "codex" }),
-      entry({ providerId: "codex" }),
+      entry({ hostId: "host_omen", hostName: "OMEN", status: "error", windows: [] }),
+      entry({ status: "unauthenticated", windows: [] }),
     ],
     ORDER,
   );
-  assert.equal(merged.length, 4);
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]!.hostId, "host_work");
+  assert.equal(merged[0]!.status, "unauthenticated");
+  assert.deepEqual(merged[0]!.issuesOnHosts, [{ host: "OMEN", status: "error" }]);
+});
+
+// Seen on 05.11.2026: Claude Code signed out on OMEN showed a second, greyed-out chip.
+test("folds a host that is not signed in into the working entry of the same provider", () => {
+  const merged = mergeSameAccounts(
+    [
+      entry({ hostId: "host_omen", hostName: "OMEN", status: "unauthenticated", windows: [], planLabel: null }),
+      entry({ accountEmail: "adam@example.test" }),
+    ],
+    ORDER,
+  );
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0]!.status, "ok");
+  assert.deepEqual(merged[0]!.alsoOnHosts, []);
+  assert.deepEqual(merged[0]!.issuesOnHosts, [{ host: "OMEN", status: "unauthenticated" }]);
+});
+
+// Seen on 05.11.2026: Antigravity reports no email. Both hosts read the same quota a few
+// minutes apart, so the reset times matched to the second while usage read 4 % and 3 %.
+test("merges an account without email whose distinctive reset times match while usage drifted", () => {
+  const server = [
+    { label: "Gemini Models · Weekly", usedPercent: 4, resetsAt: "2026-11-09T05:57:50.000Z" },
+    { label: "Gemini Models · 5 hours", usedPercent: 4, resetsAt: "2026-11-05T12:01:40.000Z" },
+  ];
+  const omen = [
+    { label: "Gemini Models · 5 hours", usedPercent: 3, resetsAt: "2026-11-05T12:01:40.000Z" },
+    { label: "Gemini Models · Weekly", usedPercent: 3, resetsAt: "2026-11-09T05:57:50.000Z" },
+  ];
+  const merged = mergeSameAccounts(
+    [
+      entry({ providerId: "antigravity-cli", hostId: "host_omen", hostName: "OMEN", planLabel: null, windows: omen }),
+      entry({ providerId: "antigravity-cli", planLabel: null, windows: server }),
+    ],
+    ORDER,
+  );
+  assert.equal(merged.length, 1);
+  assert.deepEqual(merged[0]!.alsoOnHosts, ["OMEN"]);
+  // usage only grows inside a window, so the higher reading is the newer one
+  assert.deepEqual(
+    merged[0]!.windows.map((w) => w.usedPercent),
+    [4, 4],
+  );
+});
+
+test("keeps accounts apart when their distinctive reset times differ", () => {
+  const merged = mergeSameAccounts(
+    [
+      entry({ windows: [{ label: "5 hours", usedPercent: 4, resetsAt: "2026-11-05T12:01:40.000Z" }] }),
+      entry({ hostId: "host_omen", windows: [{ label: "5 hours", usedPercent: 4, resetsAt: "2026-11-05T14:37:12.000Z" }] }),
+    ],
+    ORDER,
+  );
+  assert.equal(merged.length, 2);
+});
+
+test("an account key decides before usage: different keys stay apart, equal keys merge", () => {
+  const apart = mergeSameAccounts(
+    [entry({ accountKey: "openai:a" }), entry({ hostId: "host_omen", accountKey: "openai:b" })],
+    ORDER,
+  );
+  assert.equal(apart.length, 2);
+  const together = mergeSameAccounts(
+    [
+      entry({ accountKey: "openai:a" }),
+      entry({
+        hostId: "host_omen",
+        accountKey: "openai:a",
+        windows: [{ label: "Weekly limit", usedPercent: 70, resetsAt: null }],
+      }),
+    ],
+    ORDER,
+  );
+  assert.equal(together.length, 1);
 });
 
 test("does not mutate its input", () => {

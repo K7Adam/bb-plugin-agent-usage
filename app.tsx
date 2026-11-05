@@ -23,7 +23,7 @@ import type {
   ExperimentalAppOverlayProps,
   PluginSettingsSectionProps,
 } from "@get-bb/plugin-sdk/app";
-import { mergeSameAccounts } from "./src/usage-dedupe.ts";
+import { mergeSameAccounts, type HostIssue } from "./src/usage-dedupe.ts";
 import {
   clamp,
   clampDrag,
@@ -69,8 +69,11 @@ interface ProviderEntry {
   planLabel: string | null;
   accountEmail: string | null;
   windows: UsageWindow[];
+  accountKey: string | null;
   /** Other hosts that report this same account (merged into this entry). */
   alsoOnHosts: string[];
+  /** Hosts where this provider is not signed in or failed, shown here instead of as a second chip. */
+  issuesOnHosts: HostIssue[];
   provider: {
     id: string;
     logoUrl?: string | null;
@@ -248,11 +251,17 @@ function ago(fetchedAt: number): string {
   return `${Math.floor(minutes / 60)}h ago`;
 }
 
+function accountKeyOf(entry: unknown): string | null {
+  if (typeof entry !== "object" || entry === null) return null;
+  const key = (entry as { accountKey?: unknown }).accountKey;
+  return typeof key === "string" && key.length > 0 ? key : null;
+}
+
 async function loadSnapshot(
   sdk: ReturnType<typeof useSdk>,
   force = false,
 ): Promise<Snapshot> {
-  const providers: Omit<ProviderEntry, "alsoOnHosts">[] = [];
+  const providers: Omit<ProviderEntry, "alsoOnHosts" | "issuesOnHosts">[] = [];
   let error: string | null = null;
   let hosts: Awaited<ReturnType<typeof sdk.hosts.list>> = [];
   try {
@@ -288,6 +297,7 @@ async function loadSnapshot(
                 entry && typeof entry.accountEmail === "string"
                   ? entry.accountEmail
                   : null,
+              accountKey: accountKeyOf(entry),
               windows:
                 entry?.status === "ok"
                   ? entry.windows.map((window) => ({
@@ -866,6 +876,19 @@ const WindowRow = memo(function WindowRow({
   );
 });
 
+function issueText(issue: HostIssue): string {
+  switch (issue.status) {
+    case "not_installed":
+      return `${issue.host}: not installed`;
+    case "unauthenticated":
+      return `${issue.host}: not signed in`;
+    case "expired":
+      return `${issue.host}: session expired`;
+    default:
+      return `${issue.host}: usage not read`;
+  }
+}
+
 function statusText(provider: ProviderEntry): string {
   switch (provider.status) {
     case "not_installed":
@@ -932,6 +955,11 @@ const ProviderRows = memo(function ProviderRows({
           </span>
         )}
       </div>
+      {provider.issuesOnHosts.length > 0 && (
+        <p className="col-span-full truncate text-2xs text-muted-foreground" title="Other machines that report this provider">
+          {provider.issuesOnHosts.map(issueText).join(" · ")}
+        </p>
+      )}
       {provider.status === "ok" ? (
         provider.windows.length > 0 ? (
           provider.windows.map((window) => (
