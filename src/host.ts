@@ -17,7 +17,7 @@ import { createAntigravityBridge } from "./antigravity-bridge.ts";
 import { readAntigravityAccount, readAntigravityUsage } from "./collectors/antigravity.ts";
 import { readDevinAccount, readDevinUsage } from "./collectors/devin.ts";
 
-const ANTIGRAVITY_LOGIN_COMMAND = "agy_acp_server";
+const ANTIGRAVITY_LOGIN_COMMAND = "agy";
 
 // `installation` is not declared for either provider, so bb never runs these
 // installers; the bridge's dialect type requires one.

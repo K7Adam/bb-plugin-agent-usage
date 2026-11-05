@@ -17,6 +17,18 @@ export const PROVIDER_LABELS: Record<UsageProviderId, string> = {
   [ANTIGRAVITY_PROVIDER_ID]: "Google Antigravity",
 };
 
+// agy 1.5.1 and newer serve ACP themselves (`agy acp`): it answers initialize
+// in well under a second. The separate agy_acp_server from the ACP registry is a
+// PyInstaller build that unpacks about 300 MB on every start and took 16 s, under
+// load more than the bridge's 60-second initialize limit. A command named agy
+// gets the `acp` subcommand, any other command is launched as is.
+export const DEFAULT_ANTIGRAVITY_COMMAND = "agy";
+
+export function antigravityLaunchArgs(command: string): string[] {
+  const name = command.trim().split(/[\\/]/).pop() ?? "";
+  return /^agy(\.exe)?$/i.test(name) ? ["acp"] : [];
+}
+
 export function isUsageProviderId(value: string): value is UsageProviderId {
   return (USAGE_PROVIDER_IDS as readonly string[]).includes(value);
 }

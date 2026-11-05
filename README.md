@@ -7,7 +7,7 @@ providers over ACP and shows each plan's quota in bb's usage panel
 | Provider id | Agent | Usage windows |
 | --- | --- | --- |
 | `devin-cli` | Devin CLI (`devin acp`) | Daily and weekly quota, plan name |
-| `antigravity-cli` | Antigravity ACP server (`agy_acp_server`) | 5-hour and weekly quota per model group (Gemini, Claude/GPT, Gemini 4 Argon) |
+| `antigravity-cli` | Antigravity CLI (`agy acp`) | 5-hour and weekly quota per model group (Gemini, Claude/GPT, Gemini 4 Argon) |
 
 Both providers run on bb's own ACP bridge (`@get-bb/plugin-sdk/provider-bridge/acp-next`),
 the same one bb uses for its built-in ACP agents: models, reasoning levels, session modes and
@@ -19,11 +19,14 @@ On every bb machine that runs these agents:
 
 - **Devin:** the [Devin CLI](https://docs.devin.ai/cli), signed in with `devin auth login`.
 - **Antigravity:**
-  - the Antigravity ACP server from the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
-    (`antigravity-acp`, a zip with `agy_acp_server.exe` on Windows and `agy_acp_server.par` elsewhere). It signs in
-    with Google on its first session.
-  - the `agy` CLI (1.1.11 or newer), signed in. Usage is read with `agy -p /usage --output-format json`, which
-    agy answers without a model turn.
+  - the `agy` CLI, signed in. From agy 1.5.1 it serves ACP itself (`agy acp`), which the plugin starts by
+    default. It answers ACP's `initialize` in well under a second. Usage is read with
+    `agy -p /usage --output-format json`, which agy answers without a model turn (1.1.11 or newer).
+  - Older setups can keep the separate Antigravity ACP server from the
+    [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json) (`antigravity-acp`,
+    `agy_acp_server.exe` on Windows, `agy_acp_server.par` elsewhere) by setting `antigravityCommand` to it.
+    It is a PyInstaller build that unpacks about 300 MB on every start: `initialize` took 16 seconds on an idle
+    machine and, under load, more than the bridge's 60-second limit.
 
 ## Install
 
@@ -31,11 +34,12 @@ On every bb machine that runs these agents:
 bb plugin install https://github.com/K7Adam/bb-plugin-agent-usage.git
 ```
 
-If a command is not on PATH, set it, then reload the plugin:
+If a command is not on PATH, set it, then reload the plugin. A command named `agy` (or `agy.exe`) is started
+as `<command> acp`, any other Antigravity command without arguments:
 
 ```sh
 bb plugin config agent-usage set devinCommand "C:/Users/me/AppData/Local/devin/cli/bin/devin.exe"
-bb plugin config agent-usage set antigravityCommand "C:/Users/me/AppData/Local/agy-acp-server/1.4.1/agy_acp_server.exe"
+bb plugin config agent-usage set antigravityCommand "C:/Users/me/AppData/Local/agy/bin/agy.exe"
 bb plugin reload agent-usage
 ```
 
@@ -59,6 +63,8 @@ so each agent appears once.
 Both sources are undocumented and may change without notice.
 
 ## Antigravity temp folder
+
+This section applies only to the separate `agy_acp_server`, not to `agy acp`.
 
 The Antigravity ACP server is a PyInstaller one-file build. Every start unpacks about 300 MB into a new
 `_MEI…` folder under the temp folder, and only a server that exits on its own removes it again. bb stops

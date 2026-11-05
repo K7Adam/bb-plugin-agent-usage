@@ -1,6 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
 import {
+  antigravityLaunchArgs,
   ANTIGRAVITY_DIALECT_ID,
   ANTIGRAVITY_PROVIDER_ID,
   DEVIN_DIALECT_ID,
@@ -99,7 +100,7 @@ export function registerProviders(bb: BbPluginApi, commands: AgentCommands): voi
     dialect: ANTIGRAVITY_DIALECT_ID,
     icon: "./assets/icons/antigravity.svg",
     command: commands.antigravityCommand,
-    args: [],
+    args: antigravityLaunchArgs(commands.antigravityCommand),
     // The skill folders the Antigravity ACP server reads.
     skillRoots: { user: [".agents/skills", ".gemini/config/skills"], project: [".agents/skills"] },
     signInHint: "Start an Antigravity thread on the machine; the ACP server opens a Google sign-in.",

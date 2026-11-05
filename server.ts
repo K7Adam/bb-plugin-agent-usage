@@ -1,5 +1,6 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 
+import { DEFAULT_ANTIGRAVITY_COMMAND } from "./src/agents.ts";
 import { registerProviders } from "./src/providers.ts";
 import { registerUsageSource } from "./src/usage-source.ts";
 
@@ -14,10 +15,10 @@ export default async function plugin(bb: BbPluginApi) {
     },
     antigravityCommand: {
       type: "string",
-      label: "Antigravity ACP server command",
+      label: "Antigravity command",
       description:
-        "The Antigravity ACP server (agy_acp_server.exe on Windows, agy_acp_server.par elsewhere) from the ACP registry: a name on PATH or an absolute path.",
-      default: "agy_acp_server",
+        "The agy CLI (1.5.1 or newer), started as `<command> acp`: a name on PATH or an absolute path. Any other command, such as the older agy_acp_server from the ACP registry, is started without arguments.",
+      default: DEFAULT_ANTIGRAVITY_COMMAND,
     },
     overlayEnabled: {
       type: "boolean",
@@ -197,7 +198,7 @@ export default async function plugin(bb: BbPluginApi) {
 
   registerProviders(bb, {
     devinCommand: devinCommand.trim() || "devin",
-    antigravityCommand: antigravityCommand.trim() || "agy_acp_server",
+    antigravityCommand: antigravityCommand.trim() || DEFAULT_ANTIGRAVITY_COMMAND,
   });
   registerUsageSource(bb);
 }
