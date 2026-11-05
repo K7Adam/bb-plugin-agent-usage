@@ -48,6 +48,24 @@ Each provider is listed only on machines where its command is installed.
 If you added Devin or Antigravity under the ACP plugin's **Custom agents** before, remove those entries
 so each agent appears once.
 
+## Where usage is shown
+
+Desktop and mobile are set separately (Settings → Devin & Antigravity):
+
+| Setting | Options | Default |
+| --- | --- | --- |
+| `overlayPlacementDesktop` | `floating`, `header`, `off` | `floating` |
+| `overlayPlacementMobile` | `header`, `floating`, `off` | `header` |
+
+- **floating**: the draggable pill. Its position is stored on each device, separately for desktop and
+  mobile (browser storage), so dragging it on one device no longer moves it on another.
+  `overlayPosition` and `overlayDock` are only the starting point for a device that has not been
+  arranged yet. Dragging the pill onto the dismiss target turns it off for that form factor only.
+- **header**: small rings in each thread's header row. On a phone the three providers closest to their
+  limit, the rest as "+n", and a tap opens the details as a bottom sheet. On a desktop every ring, with a
+  popover under the button.
+- Viewports up to 520px wide count as mobile.
+
 ## How usage is read
 
 | | Source | Credential |

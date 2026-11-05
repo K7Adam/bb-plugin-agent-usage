@@ -27,6 +27,24 @@ export default async function plugin(bb: BbPluginApi) {
         "Show a floating pill with the remaining plan quota of every provider that reports usage to bb.",
       default: true,
     },
+    overlayPlacementDesktop: {
+      type: "select",
+      label: "Usage display on desktop",
+      description:
+        "Where wide screens show usage: a floating pill, small rings in each thread's header, or nothing.",
+      options: ["floating", "header", "off"],
+      experimental_optionLabels: { floating: "Floating pill", header: "Thread header", off: "Off" },
+      default: "floating",
+    },
+    overlayPlacementMobile: {
+      type: "select",
+      label: "Usage display on mobile",
+      description:
+        "Where phones (viewports up to 520px) show usage. The thread header is always visible and covers nothing.",
+      options: ["header", "floating", "off"],
+      experimental_optionLabels: { header: "Thread header", floating: "Floating pill", off: "Off" },
+      default: "header",
+    },
     overlayRefreshMinutes: {
       type: "number",
       label: "Usage pill refresh interval (minutes)",
@@ -36,7 +54,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     overlayPosition: {
       type: "select",
-      label: "Usage pill position",
+      label: "Usage pill position (default)",
+      description:
+        "Where the pill starts on a device that has not been arranged yet. Dragging the pill, or picking a zone in the preview, stores the position on that device only, separately for desktop and mobile.",
       options: [
         "top-left",
         "top-center",
@@ -181,9 +201,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     overlayDock: {
       type: "string",
-      label: "Custom dock position",
+      label: "Custom dock position (default)",
       description:
-        "Written automatically when you drag the pill — format edge:fraction (e.g. right:0.62). Clear to return to the preset position.",
+        "Starting dock for a device that has not been arranged yet, format edge:fraction (e.g. right:0.62). Dragging no longer writes it: each device keeps its own position.",
       default: "",
     },
     overlayProviders: {

@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   definePluginApp,
   experimental_ProviderIcon,
@@ -22,8 +23,19 @@ import {
 import type {
   ExperimentalAppOverlayProps,
   PluginSettingsSectionProps,
+  PluginThreadHeaderActionProps,
 } from "@get-bb/plugin-sdk/app";
 import { mergeSameAccounts, type HostIssue } from "./src/usage-dedupe.ts";
+import {
+  PLACEMENT_SETTING,
+  placementFor,
+  readLayout,
+  writeLayout,
+  type DeviceLayout,
+  type FormFactor,
+  type LayoutStorage,
+  type Placement,
+} from "./src/device-layout.ts";
 import {
   clamp,
   clampDrag,
@@ -378,6 +390,12 @@ interface OverlayConfig {
   pulseCritical: boolean;
   mobileCompact: boolean;
   dock: Dock | null;
+  /** Desktop or phone-width viewport; decides placement and which stored position applies. */
+  form: FormFactor;
+  /** Where this form factor shows usage: floating pill, thread header, or nowhere. */
+  placement: Placement;
+  /** Stores this device's pill position. Never touches the synced settings. */
+  setLayout: (layout: DeviceLayout) => void;
 }
 
 function pick<T extends string>(
@@ -391,14 +409,75 @@ function pick<T extends string>(
     : fallback;
 }
 
+/** Phone-width viewports count as mobile, as the pill's compact mode always did. */
+const MOBILE_QUERY = "(max-width: 520px)";
+/** Tells other components in this window that the stored layout changed. */
+const LAYOUT_EVENT = "agent-usage:layout-changed";
+
+function useFormFactor(): FormFactor {
+  return useMediaQuery(MOBILE_QUERY) ? "mobile" : "desktop";
+}
+
+function browserStorage(): LayoutStorage | null {
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+/** This device's pill position for its form factor, seeded from the shared settings. */
+function useDeviceLayout(
+  form: FormFactor,
+  fallback: DeviceLayout,
+): [DeviceLayout, (layout: DeviceLayout) => void] {
+  const [layout, setState] = useState(() =>
+    readLayout(browserStorage(), form, fallback),
+  );
+  useEffect(() => {
+    const sync = () =>
+      setState((prev) => {
+        const next = readLayout(browserStorage(), form, fallback);
+        return next.dock === prev.dock && next.position === prev.position
+          ? prev
+          : next;
+      });
+    sync();
+    // other tabs of this browser, and other components of this window
+    window.addEventListener("storage", sync);
+    window.addEventListener(LAYOUT_EVENT, sync);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener(LAYOUT_EVENT, sync);
+    };
+    // primitive deps: the fallback object is rebuilt every render
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, fallback.dock, fallback.position]);
+  const setLayout = useCallback(
+    (next: DeviceLayout) => {
+      writeLayout(browserStorage(), form, next);
+      setState(next);
+      window.dispatchEvent(new Event(LAYOUT_EVENT));
+    },
+    [form],
+  );
+  return [layout, setLayout];
+}
+
 function useOverlayConfig(): OverlayConfig {
   const { values } = useSettings();
-  // Memoized on the setting string: a fresh object each render would
+  const form = useFormFactor();
+  // The shared settings only seed a device that has no position of its own.
+  const [layout, setLayout] = useDeviceLayout(form, {
+    dock: typeof values?.overlayDock === "string" ? values.overlayDock : "",
+    position:
+      typeof values?.overlayPosition === "string"
+        ? values.overlayPosition
+        : "bottom-right",
+  });
+  // Memoized on the stored string: a fresh object each render would
   // invalidate every effect that depends on the dock identity.
-  const dock = useMemo(
-    () => parseDock(values?.overlayDock),
-    [values?.overlayDock],
-  );
+  const dock = useMemo(() => parseDock(layout.dock), [layout.dock]);
   const csv =
     typeof values?.overlayProviders === "string"
       ? values.overlayProviders.trim()
@@ -406,7 +485,7 @@ function useOverlayConfig(): OverlayConfig {
   return {
     enabled: values?.overlayEnabled !== false,
     minutes: Math.max(0, Number(values?.overlayRefreshMinutes ?? 2) || 0),
-    position: pick(values?.overlayPosition, POSITIONS, "bottom-right"),
+    position: pick(layout.position, POSITIONS, "bottom-right"),
     orientation: pick(values?.overlayOrientation, ORIENTATIONS, "horizontal"),
     size: pick(values?.overlaySize, SIZES, "comfortable"),
     colorMode: pick(values?.overlayColorMode, COLOR_MODES, "adaptive"),
@@ -426,6 +505,9 @@ function useOverlayConfig(): OverlayConfig {
     pulseCritical: values?.overlayPulseCritical === true,
     mobileCompact: values?.overlayMobileCompact !== false,
     dock,
+    form,
+    placement: placementFor(form, values),
+    setLayout,
   };
 }
 
@@ -1016,21 +1098,356 @@ function ChevronDown() {
 
 // ---------- the overlay ----------
 
-function UsagePill(_props: ExperimentalAppOverlayProps) {
+// ---------- shared usage snapshot ----------
+
+// The pill and every thread-header display (one per visible pane) read the
+// same snapshot: one request in flight at a time, and a fresh result reaches
+// every mounted display instead of each polling on its own.
+const usageStore: {
+  snapshot: Snapshot | null;
+  inflight: Promise<Snapshot> | null;
+  listeners: Set<(snapshot: Snapshot) => void>;
+} = { snapshot: null, inflight: null, listeners: new Set() };
+
+/** A result this young is reused instead of asking every host again. */
+const SHARED_FRESH_MS = 15_000;
+
+async function loadShared(
+  sdk: ReturnType<typeof useSdk>,
+  force: boolean,
+): Promise<Snapshot> {
+  if (usageStore.inflight) return usageStore.inflight;
+  const cached = usageStore.snapshot;
+  if (!force && cached && Date.now() - cached.fetchedAt < SHARED_FRESH_MS) {
+    return cached;
+  }
+  const request = loadSnapshot(sdk, force)
+    .catch(
+      (cause: unknown): Snapshot => ({
+        providers: [],
+        fetchedAt: Date.now(),
+        error: cause instanceof Error ? cause.message : String(cause),
+      }),
+    )
+    .then((next) => {
+      usageStore.snapshot = next;
+      for (const listener of usageStore.listeners) listener(next);
+      return next;
+    })
+    .finally(() => {
+      usageStore.inflight = null;
+    });
+  usageStore.inflight = request;
+  return request;
+}
+
+/** Polls usage while `active`: on the configured interval, when the window
+ * becomes visible again, after a dropped connection and when hosts change. */
+function useUsageSnapshot(active: boolean, minutes: number) {
   const sdk = useSdk();
-  const config = useOverlayConfig();
   const connection = useRealtimeConnectionState();
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(usageStore.snapshot);
   const [loading, setLoading] = useState(false);
+  const lastFetch = useRef(usageStore.snapshot?.fetchedAt ?? 0);
+
+  useEffect(() => {
+    const listener = (next: Snapshot) => {
+      lastFetch.current = next.fetchedAt;
+      setSnapshot(next);
+    };
+    usageStore.listeners.add(listener);
+    return () => {
+      usageStore.listeners.delete(listener);
+    };
+  }, []);
+
+  const refresh = useCallback(
+    async (force = false) => {
+      setLoading(true);
+      try {
+        const next = await loadShared(sdk, force);
+        lastFetch.current = next.fetchedAt;
+        setSnapshot(next);
+      } finally {
+        setLoading(false);
+      }
+    },
+    [sdk],
+  );
+
+  const intervalMs = minutes * 60_000;
+  const stale = useCallback(
+    () => Date.now() - lastFetch.current >= intervalMs,
+    [intervalMs],
+  );
+
+  // Poll only while the window is visible; re-fetch on focus when stale.
+  useEffect(() => {
+    if (!active) return;
+    if (!document.hidden) void refresh();
+    const onVisible = () => {
+      if (!document.hidden && stale()) void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    if (intervalMs <= 0) {
+      return () => document.removeEventListener("visibilitychange", onVisible);
+    }
+    const timer = setInterval(() => {
+      if (!document.hidden) void refresh();
+    }, intervalMs);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [active, intervalMs, refresh, stale]);
+
+  // Recover after a dropped realtime connection.
+  useEffect(() => {
+    if (active && connection === "connected" && stale()) void refresh();
+  }, [active, connection, refresh, stale]);
+
+  // Refetch when hosts connect or disconnect.
+  useEffect(() => {
+    if (!active) return;
+    return sdk.subscribe({
+      event: "host:changed",
+      callback: () => {
+        if (!document.hidden) void refresh();
+      },
+    });
+  }, [sdk, active, refresh]);
+
+  return { snapshot, loading, refresh };
+}
+
+/** Providers that get a ring: a headline window or a failure, minus filtered ones. */
+function chipsOf(
+  providers: readonly ProviderEntry[],
+  config: OverlayConfig,
+): ProviderEntry[] {
+  return providers.filter(
+    (provider) =>
+      (provider.status !== "ok" ||
+        headline(provider, config.headlineMode) !== null) &&
+      (config.providers === null || config.providers.has(provider.providerId)),
+  );
+}
+
+/** The popup body: provider tabs, every limit window, refresh and close.
+ * Shared by the floating pill and the thread-header display. */
+function UsagePanel({
+  snapshot,
+  loading,
+  refresh,
+  config,
+  tab,
+  setTab,
+  onClose,
+}: {
+  snapshot: Snapshot | null;
+  loading: boolean;
+  refresh: (force?: boolean) => Promise<void>;
+  config: OverlayConfig;
+  tab: string | null;
+  setTab: (tab: string | null) => void;
+  onClose: () => void;
+}) {
+  const allProviders = snapshot?.providers ?? [];
+  // Popup tab model: one tab per unique providerId (like the built-in panel).
+  const seen = new Map<
+    string,
+    {
+      providerId: string;
+      displayName: string;
+      provider: ProviderEntry["provider"];
+      severity: "critical" | "warning" | null;
+    }
+  >();
+  for (const provider of allProviders) {
+    const found = seen.get(provider.providerId);
+    const sev = severity(provider);
+    const rank = sev === "critical" ? 2 : sev === "warning" ? 1 : 0;
+    if (!found) {
+      seen.set(provider.providerId, {
+        providerId: provider.providerId,
+        displayName: provider.displayName,
+        provider: provider.provider,
+        severity: sev,
+      });
+    } else {
+      const old = found.severity === "critical" ? 2 : found.severity === "warning" ? 1 : 0;
+      if (rank > old) found.severity = sev;
+    }
+  }
+  const uniqueProviders = [...seen.values()];
+  const multiHost =
+    new Set(allProviders.map((provider) => provider.hostId)).size > 1;
+  const hostLabel =
+    [...new Set(allProviders.map((provider) => provider.hostName))]
+      .filter(Boolean)
+      .join(" · ") || null;
+  // A selected tab whose provider vanished falls back to "All".
+  const activeTab =
+    tab !== null && seen.has(tab) ? tab : null;
+  const visibleProviders =
+    activeTab === null
+      ? allProviders
+      : allProviders.filter(
+          (provider) => provider.providerId === activeTab,
+        );
+
+  return (
+    <>
+    {/* toolbar — provider tabs like the built-in panel */}
+    <div className="flex h-9 min-w-0 items-center gap-1 border-b border-border/60 px-1.5">
+      {uniqueProviders.length < 2 ? (
+        <span className="px-1.5 text-2xs font-medium">Usage</span>
+      ) : (
+        <div
+          role="tablist"
+          aria-label="Usage provider"
+          className="flex min-w-0 shrink items-center gap-0.5 overflow-x-auto"
+        >
+          <button
+            type="button"
+            role="tab"
+            title="All accounts"
+            aria-selected={activeTab === null}
+            onClick={() => setTab(null)}
+            className={`relative flex h-6 shrink-0 items-center justify-center rounded-md px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+              activeTab === null
+                ? "bg-muted text-foreground"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <span className="text-2xs font-medium">All</span>
+          </button>
+          {uniqueProviders.map((provider) => {
+            const selected = provider.providerId === activeTab;
+            const sev = provider.severity;
+            return (
+              <button
+                key={provider.providerId}
+                type="button"
+                role="tab"
+                title={
+                  sev === null
+                    ? provider.displayName
+                    : `${provider.displayName}: an account usage window is at least ${
+                        sev === "critical" ? "95" : "80"
+                      }% used.`
+                }
+                aria-label={provider.displayName}
+                aria-selected={selected}
+                onClick={() =>
+                  setTab(selected ? null : provider.providerId)
+                }
+                // severity dot hidden on the selected tab and in All view
+                // (mirrors the built-in panel)
+
+                className={`group/tab relative flex h-6 w-7 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                  selected
+                    ? "bg-muted text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <ProviderIcon
+                  providerKind="agent"
+                  provider={provider.provider}
+                  className={`size-3.5 ${
+                    selected
+                      ? ""
+                      : "opacity-60 group-hover/tab:opacity-100"
+                  }`}
+                />
+                {sev !== null && !selected && activeTab !== null && (
+                  <span
+                    aria-hidden="true"
+                    className="absolute right-0.5 top-0.5 size-1.5 rounded-full ring-2 ring-popover"
+                    style={{
+                      background:
+                        sev === "critical"
+                          ? "var(--destructive, #ef4444)"
+                          : "var(--warning, #f59e0b)",
+                    }}
+                  />
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+      <span className="min-w-0 flex-1" />
+      {multiHost && (
+        <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">
+          {activeTab === null ? "All hosts" : hostLabel}
+        </span>
+      )}
+      <button
+        type="button"
+        aria-label="Reload provider usage"
+        title="Refresh now"
+        disabled={loading}
+        onClick={() => void refresh(true)}
+        className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+      >
+        <RotateCcw spinning={loading} />
+      </button>
+      <button
+        type="button"
+        aria-label="Close"
+        title="Close"
+        onClick={onClose}
+        className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <ChevronDown />
+      </button>
+    </div>
+    {/* body — one shared grid so columns align across providers */}
+    <div className="grid max-h-[55vh] grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-2 overflow-y-auto px-2 py-1.5">
+      {visibleProviders.map((provider) => (
+        <ProviderRows
+          key={provider.key}
+          provider={provider}
+          cfg={config}
+          showProvider={activeTab === null}
+          showHost={multiHost}
+        />
+      ))}
+      {visibleProviders.length === 0 && (
+        <p className="col-span-full py-2 text-2xs text-muted-foreground">
+          {loading ? "Loading usage…" : "No providers report usage."}
+        </p>
+      )}
+      {snapshot?.error && (
+        <p className="col-span-full py-1 text-2xs text-destructive">
+          {snapshot.error}
+        </p>
+      )}
+    </div>
+    {/* footer */}
+    <div className="border-t border-border/60 px-2.5 py-1.5 text-2xs text-muted-foreground">
+      {snapshot ? `Updated ${ago(snapshot.fetchedAt)}` : "Loading…"}
+      {config.minutes <= 0
+        ? " · manual mode"
+        : ` · every ${config.minutes}m`}
+    </div>
+    </>
+  );
+}
+
+function UsagePill(_props: ExperimentalAppOverlayProps) {
+  const config = useOverlayConfig();
+  const active = config.placement === "floating";
+  const { snapshot, loading, refresh } = useUsageSnapshot(active, config.minutes);
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<string | null>(null);
-  const isMobile = useMediaQuery("(max-width: 520px)");
+  const isMobile = config.form === "mobile";
   const reducedMotion = useMediaQuery("(prefers-reduced-motion: reduce)");
   const { set: writeSetting } = useWriteSetting();
-  const inFlight = useRef(false);
   const vp = useViewportSize();
   // Drag-to-dock: live position while a drag is in progress; the committed
-  // position lives in the overlayDock setting (or the preset position).
+  // position is stored on this device for its form factor (useDeviceLayout).
   const pillRef = useRef<HTMLButtonElement>(null);
   const popupRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{
@@ -1070,74 +1487,6 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
   // the settings write round-trips (otherwise it would jump back first).
   const [pendingStyle, setPendingStyle] =
     useState<React.CSSProperties | null>(null);
-  const lastFetch = useRef(0);
-
-  const refresh = useCallback(
-    async (force = false) => {
-      if (inFlight.current) return;
-      inFlight.current = true;
-      setLoading(true);
-      try {
-        const next = await loadSnapshot(sdk, force);
-        lastFetch.current = next.fetchedAt;
-        setSnapshot(next);
-      } catch (cause) {
-        setSnapshot({
-          providers: [],
-          fetchedAt: Date.now(),
-          error: cause instanceof Error ? cause.message : String(cause),
-        });
-      } finally {
-        inFlight.current = false;
-        setLoading(false);
-      }
-    },
-    [sdk],
-  );
-
-  const intervalMs = config.minutes * 60_000;
-  const stale = useCallback(
-    () => Date.now() - lastFetch.current >= intervalMs,
-    [intervalMs],
-  );
-
-  // Poll only while the window is visible; re-fetch on focus when stale.
-  useEffect(() => {
-    if (!config.enabled) return;
-    if (!document.hidden) void refresh();
-    const onVisible = () => {
-      if (!document.hidden && stale()) void refresh();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-    if (intervalMs <= 0) {
-      return () => document.removeEventListener("visibilitychange", onVisible);
-    }
-    const timer = setInterval(() => {
-      if (!document.hidden) void refresh();
-    }, intervalMs);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [config.enabled, intervalMs, refresh, stale]);
-
-  // Recover after a dropped realtime connection.
-  useEffect(() => {
-    if (config.enabled && connection === "connected" && stale())
-      void refresh();
-  }, [config.enabled, connection, refresh, stale]);
-
-  // Refetch when hosts connect or disconnect.
-  useEffect(() => {
-    if (!config.enabled) return;
-    return sdk.subscribe({
-      event: "host:changed",
-      callback: () => {
-        if (!document.hidden) void refresh();
-      },
-    });
-  }, [sdk, config.enabled, refresh]);
-
   // Escape closes the popup.
   useEffect(() => {
     if (!open) return;
@@ -1251,8 +1600,10 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
         dismiss: dismissPoint(vp),
       });
       if (result.kind === "dismiss") {
+        // Hides the pill on this form factor only: a phone dismissal must
+        // not take the desktop pill away.
         setHiding(true);
-        void writeSetting("overlayEnabled", false).catch(() =>
+        void writeSetting(PLACEMENT_SETTING[config.form], "off").catch(() =>
           setHiding(false),
         );
         return;
@@ -1266,9 +1617,7 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
             spring: springMs(dist),
           }),
         );
-        void writeSetting("overlayDock", "").then(() =>
-          writeSetting("overlayPosition", result.position),
-        );
+        config.setLayout({ dock: "", position: result.position });
         return;
       }
       const target = dockPx(result.dock, vp);
@@ -1276,12 +1625,12 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       setPendingStyle(
         dockStyle(result.dock, vp, { reducedMotion, spring: springMs(dist) }),
       );
-      void writeSetting(
-        "overlayDock",
-        `${result.dock.edge}:${result.dock.t.toFixed(4)}`,
-      );
+      config.setLayout({
+        dock: `${result.dock.edge}:${result.dock.t.toFixed(4)}`,
+        position: config.position,
+      });
     },
-    [config.orientation, writeSetting, reducedMotion, vp],
+    [config, writeSetting, reducedMotion, vp],
   );
 
   const onPillPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
@@ -1348,71 +1697,23 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
       commitDrop(rect.left, rect.top, rect.width, rect.height, d.samples);
   };
 
-  // Re-enabling the overlay (or a failed dismiss write) revives the pill.
+  // Re-enabling the pill (or a failed dismiss write) revives it.
   useEffect(() => {
-    if (config.enabled) setHiding(false);
-  }, [config.enabled]);
+    if (active) setHiding(false);
+  }, [active]);
 
-  if (!config.enabled || hiding) return null;
+  if (!active || hiding) return null;
   if (snapshot === null && !loading) return null;
 
   const scale =
     SCALE[isMobile && config.mobileCompact ? "compact" : config.size];
   const allProviders = snapshot?.providers ?? [];
-  const chips = allProviders.filter(
-    (provider) =>
-      (provider.status !== "ok" ||
-        headline(provider, config.headlineMode) !== null) &&
-      (config.providers === null || config.providers.has(provider.providerId)),
-  );
+  const chips = chipsOf(allProviders, config);
   // Providers that still have several chips are different accounts: name the host.
   const chipsPerProvider = new Map<string, number>();
   for (const chip of chips) {
     chipsPerProvider.set(chip.providerId, (chipsPerProvider.get(chip.providerId) ?? 0) + 1);
   }
-
-  // Popup tab model: one tab per unique providerId (like the built-in panel).
-  const seen = new Map<
-    string,
-    {
-      providerId: string;
-      displayName: string;
-      provider: ProviderEntry["provider"];
-      severity: "critical" | "warning" | null;
-    }
-  >();
-  for (const provider of allProviders) {
-    const found = seen.get(provider.providerId);
-    const sev = severity(provider);
-    const rank = sev === "critical" ? 2 : sev === "warning" ? 1 : 0;
-    if (!found) {
-      seen.set(provider.providerId, {
-        providerId: provider.providerId,
-        displayName: provider.displayName,
-        provider: provider.provider,
-        severity: sev,
-      });
-    } else {
-      const old = found.severity === "critical" ? 2 : found.severity === "warning" ? 1 : 0;
-      if (rank > old) found.severity = sev;
-    }
-  }
-  const uniqueProviders = [...seen.values()];
-  const multiHost =
-    new Set(allProviders.map((provider) => provider.hostId)).size > 1;
-  const hostLabel =
-    [...new Set(allProviders.map((provider) => provider.hostName))]
-      .filter(Boolean)
-      .join(" · ") || null;
-  // A selected tab whose provider vanished falls back to "All".
-  const activeTab =
-    tab !== null && seen.has(tab) ? tab : null;
-  const visibleProviders =
-    activeTab === null
-      ? allProviders
-      : allProviders.filter(
-          (provider) => provider.providerId === activeTab,
-        );
 
   // Pill position: live drag > just-committed target > persisted dock > preset.
   const containerStyle: React.CSSProperties = dragPos
@@ -1491,140 +1792,15 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
           className="overflow-hidden rounded-[10px] border border-border bg-popover shadow-xl"
           style={popupFixedStyle}
         >
-          {/* toolbar — provider tabs like the built-in panel */}
-          <div className="flex h-9 min-w-0 items-center gap-1 border-b border-border/60 px-1.5">
-            {uniqueProviders.length < 2 ? (
-              <span className="px-1.5 text-2xs font-medium">Usage</span>
-            ) : (
-              <div
-                role="tablist"
-                aria-label="Usage provider"
-                className="flex min-w-0 shrink items-center gap-0.5 overflow-x-auto"
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  title="All accounts"
-                  aria-selected={activeTab === null}
-                  onClick={() => setTab(null)}
-                  className={`relative flex h-6 shrink-0 items-center justify-center rounded-md px-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                    activeTab === null
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  <span className="text-2xs font-medium">All</span>
-                </button>
-                {uniqueProviders.map((provider) => {
-                  const selected = provider.providerId === activeTab;
-                  const sev = provider.severity;
-                  return (
-                    <button
-                      key={provider.providerId}
-                      type="button"
-                      role="tab"
-                      title={
-                        sev === null
-                          ? provider.displayName
-                          : `${provider.displayName}: an account usage window is at least ${
-                              sev === "critical" ? "95" : "80"
-                            }% used.`
-                      }
-                      aria-label={provider.displayName}
-                      aria-selected={selected}
-                      onClick={() =>
-                        setTab(selected ? null : provider.providerId)
-                      }
-                      // severity dot hidden on the selected tab and in All view
-                      // (mirrors the built-in panel)
-
-                      className={`group/tab relative flex h-6 w-7 shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
-                        selected
-                          ? "bg-muted text-foreground"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <ProviderIcon
-                        providerKind="agent"
-                        provider={provider.provider}
-                        className={`size-3.5 ${
-                          selected
-                            ? ""
-                            : "opacity-60 group-hover/tab:opacity-100"
-                        }`}
-                      />
-                      {sev !== null && !selected && activeTab !== null && (
-                        <span
-                          aria-hidden="true"
-                          className="absolute right-0.5 top-0.5 size-1.5 rounded-full ring-2 ring-popover"
-                          style={{
-                            background:
-                              sev === "critical"
-                                ? "var(--destructive, #ef4444)"
-                                : "var(--warning, #f59e0b)",
-                          }}
-                        />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-            <span className="min-w-0 flex-1" />
-            {multiHost && (
-              <span className="min-w-0 shrink truncate text-2xs text-muted-foreground">
-                {activeTab === null ? "All hosts" : hostLabel}
-              </span>
-            )}
-            <button
-              type="button"
-              aria-label="Reload provider usage"
-              title="Refresh now"
-              disabled={loading}
-              onClick={() => void refresh(true)}
-              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
-            >
-              <RotateCcw spinning={loading} />
-            </button>
-            <button
-              type="button"
-              aria-label="Close"
-              title="Close"
-              onClick={() => setOpen(false)}
-              className="flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <ChevronDown />
-            </button>
-          </div>
-          {/* body — one shared grid so columns align across providers */}
-          <div className="grid max-h-[55vh] grid-cols-[auto_minmax(0,1fr)_auto_auto] gap-x-2 overflow-y-auto px-2 py-1.5">
-            {visibleProviders.map((provider) => (
-              <ProviderRows
-                key={provider.key}
-                provider={provider}
-                cfg={config}
-                showProvider={activeTab === null}
-                showHost={multiHost}
-              />
-            ))}
-            {visibleProviders.length === 0 && (
-              <p className="col-span-full py-2 text-2xs text-muted-foreground">
-                {loading ? "Loading usage…" : "No providers report usage."}
-              </p>
-            )}
-            {snapshot?.error && (
-              <p className="col-span-full py-1 text-2xs text-destructive">
-                {snapshot.error}
-              </p>
-            )}
-          </div>
-          {/* footer */}
-          <div className="border-t border-border/60 px-2.5 py-1.5 text-2xs text-muted-foreground">
-            {snapshot ? `Updated ${ago(snapshot.fetchedAt)}` : "Loading…"}
-            {config.minutes <= 0
-              ? " · manual mode"
-              : ` · every ${config.minutes}m`}
-          </div>
+          <UsagePanel
+            snapshot={snapshot}
+            loading={loading}
+            refresh={refresh}
+            config={config}
+            tab={tab}
+            setTab={setTab}
+            onClose={() => setOpen(false)}
+          />
         </div>
       )}
       <div
@@ -1653,25 +1829,18 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
             ? ["ArrowLeft", "ArrowRight"]
             : ["ArrowUp", "ArrowDown"];
           const dock = config.dock;
+          const move = (value: string) =>
+            config.setLayout({ dock: value, position: config.position });
           if (event.key === along[0]) {
             event.preventDefault();
-            void writeSetting(
-              "overlayDock",
-              `${dock.edge}:${clamp01(dock.t - step, 0.03, 0.97).toFixed(4)}`,
-            );
+            move(`${dock.edge}:${clamp01(dock.t - step, 0.03, 0.97).toFixed(4)}`);
           } else if (event.key === along[1]) {
             event.preventDefault();
-            void writeSetting(
-              "overlayDock",
-              `${dock.edge}:${clamp01(dock.t + step, 0.03, 0.97).toFixed(4)}`,
-            );
+            move(`${dock.edge}:${clamp01(dock.t + step, 0.03, 0.97).toFixed(4)}`);
           } else if (across.includes(event.key)) {
             event.preventDefault();
             const [e1, e2] = dockEdgesFor(config.orientation);
-            void writeSetting(
-              "overlayDock",
-              `${event.key === across[0] ? e1 : e2}:${dock.t.toFixed(4)}`,
-            );
+            move(`${event.key === across[0] ? e1 : e2}:${dock.t.toFixed(4)}`);
           }
         }}
         onClick={(event) => {
@@ -1731,6 +1900,225 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
         )}
         </button>
       </div>
+    </>
+  );
+}
+
+// ---------- thread header display ----------
+
+/** Rings that fit the compact header before the rest folds into "+n". */
+const HEADER_COMPACT_RINGS = 3;
+const HEADER_POPOVER_WIDTH = 300;
+
+interface HeaderRingData {
+  provider: ProviderEntry;
+  failed: boolean;
+  left: number;
+  color: string;
+  summary: string;
+}
+
+function headerRings(
+  chips: readonly ProviderEntry[],
+  config: OverlayConfig,
+): HeaderRingData[] {
+  return chips.map((provider) => {
+    const window = headline(provider, config.headlineMode);
+    const failed = provider.status !== "ok" || window === null;
+    const left = failed ? 0 : remaining(window!);
+    return {
+      provider,
+      failed,
+      left,
+      color: failed ? "var(--muted-foreground, #71717a)" : tone(left, config),
+      summary: failed
+        ? `${provider.displayName}: ${statusText(provider)}`
+        : `${provider.displayName}: ${window!.label}, ${left}% left`,
+    };
+  });
+}
+
+/**
+ * Usage in the thread header's action row (`experimental_threadHeaderAction`):
+ * always visible in a thread, covers no content and never collides with the
+ * on-screen keyboard. The row is 48px with 28px controls, so it shows small
+ * rings; on a phone only the tightest three, the rest as "+n". A tap opens
+ * the shared panel, as a bottom sheet on a phone and as a popover anchored
+ * to the button otherwise.
+ */
+function UsageHeaderAction({ isCompactViewport }: PluginThreadHeaderActionProps) {
+  const config = useOverlayConfig();
+  const active = config.placement === "header";
+  const { snapshot, loading, refresh } = useUsageSnapshot(active, config.minutes);
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const vp = useViewportSize();
+  const pluginId = experimental_usePluginId();
+  const compact = isCompactViewport || config.form === "mobile";
+
+  const close = useCallback(() => {
+    setOpen(false);
+    buttonRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, close]);
+
+  // Re-measure the anchor when the viewport moves (rotation, keyboard).
+  useEffect(() => {
+    if (open) setAnchor(buttonRef.current?.getBoundingClientRect() ?? null);
+  }, [open, vp.w, vp.h, vp.offX, vp.offY]);
+
+  if (!active) return null;
+
+  const all = headerRings(chipsOf(snapshot?.providers ?? [], config), config);
+  // A phone shows what is closest to running out; a desktop keeps the
+  // alphabetical order of the pill so every ring stays in its place.
+  const ordered = compact
+    ? [...all].sort((a, b) => Number(a.failed) - Number(b.failed) || a.left - b.left)
+    : all;
+  const shown = compact ? ordered.slice(0, HEADER_COMPACT_RINGS) : ordered;
+  const hidden = ordered.length - shown.length;
+  const ringSize = compact ? 18 : 16;
+  const label =
+    all.length === 0
+      ? loading
+        ? "Provider usage, loading"
+        : "Provider usage"
+      : `Provider usage. ${ordered.map((ring) => ring.summary).join(". ")}`;
+
+  const sheetStyle: React.CSSProperties = {
+    position: "fixed",
+    left: vp.offX,
+    width: vp.w,
+    // the visible bottom edge, which sits above an open keyboard
+    top: vp.offY + vp.h,
+    transform: "translateY(-100%)",
+    maxHeight: Math.max(200, vp.h * 0.8),
+    paddingBottom: "env(safe-area-inset-bottom)",
+    zIndex: 1001,
+  };
+  const popoverStyle: React.CSSProperties = {
+    position: "fixed",
+    top: (anchor?.bottom ?? 48) + 6,
+    left: clamp01(
+      (anchor?.right ?? vp.w) - HEADER_POPOVER_WIDTH,
+      vp.offX + 8,
+      Math.max(vp.offX + 8, vp.offX + vp.w - HEADER_POPOVER_WIDTH - 8),
+    ),
+    width: `min(${HEADER_POPOVER_WIDTH}px, ${Math.max(220, vp.w - 16)}px)`,
+    zIndex: 1001,
+  };
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label={label}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={compact ? undefined : label}
+        onClick={() => {
+          if (!open) setTab(null);
+          setOpen((value) => !value);
+        }}
+        // 28px tall like the row's other controls, at least 44px wide to tap
+        className="flex h-7 min-w-11 items-center justify-center gap-1 rounded-md px-1.5 text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {shown.length === 0 ? (
+          <span className="text-2xs text-muted-foreground">
+            {loading ? "…" : "Usage"}
+          </span>
+        ) : (
+          shown.map((ring) => (
+            <span
+              key={ring.provider.key}
+              aria-hidden="true"
+              className={ring.failed ? "opacity-50" : undefined}
+            >
+              <UsageRing
+                left={ring.left}
+                color={ring.color}
+                size={ringSize}
+                stroke={2}
+              >
+                {config.iconMode === "icon" ? (
+                  <span
+                    className="grid place-items-center"
+                    style={
+                      iconToneOf(config) === "mono"
+                        ? { color: "var(--muted-foreground, #a1a1aa)", filter: "grayscale(1)" }
+                        : undefined
+                    }
+                  >
+                    <ProviderIcon
+                      providerKind="agent"
+                      provider={
+                        iconToneOf(config) === "color"
+                          ? ring.provider.provider
+                          : { ...ring.provider.provider, strings: null }
+                      }
+                      className="size-2"
+                    />
+                  </span>
+                ) : config.iconMode === "dot" ? (
+                  <span className="size-1 rounded-full" style={{ background: ring.color }} />
+                ) : null}
+              </UsageRing>
+            </span>
+          ))
+        )}
+        {hidden > 0 && (
+          <span aria-hidden="true" className="text-2xs text-muted-foreground">
+            +{hidden}
+          </span>
+        )}
+      </button>
+      {open &&
+        createPortal(
+          // bb scopes this plugin's stylesheet to [data-bb-plugin=<id>]: a
+          // portal into <body> leaves that scope unless it carries the marker.
+          <div data-bb-plugin-root="" data-bb-plugin={pluginId} className="contents">
+            <div
+              onClick={close}
+              className={compact ? "bg-black/40" : undefined}
+              style={{ position: "fixed", inset: 0, zIndex: 1000 }}
+            />
+            <div
+              role="dialog"
+              aria-label="Provider usage"
+              className={`overflow-hidden border border-border bg-popover text-foreground shadow-xl ${
+                compact ? "rounded-t-2xl border-b-0" : "rounded-[10px]"
+              }`}
+              style={compact ? sheetStyle : popoverStyle}
+            >
+              {compact && (
+                <div aria-hidden="true" className="flex justify-center pt-2">
+                  <span className="h-1 w-9 rounded-full bg-muted-foreground/30" />
+                </div>
+              )}
+              <UsagePanel
+                snapshot={snapshot}
+                loading={loading}
+                refresh={refresh}
+                config={config}
+                tab={tab}
+                setTab={setTab}
+                onClose={close}
+              />
+            </div>
+          </div>,
+          document.body,
+        )}
     </>
   );
 }
@@ -1992,8 +2380,8 @@ function ProviderFilter({
 function UsagePillSettings(_props: PluginSettingsSectionProps) {
   const config = useOverlayConfig();
   const { set, saving } = useWriteSetting();
-  const disabled = !config.enabled;
-  const summary = `${config.position} · ${config.orientation} · ${config.size} · ${
+  const disabled = config.placement !== "floating";
+  const summary = `${config.form}: ${config.placement === "floating" ? "floating pill" : config.placement === "header" ? "thread header" : "off"} · ${config.position} · ${config.orientation} · ${config.size} · ${
     config.minutes <= 0 ? "manual refresh" : `every ${config.minutes}m`
   }`;
 
@@ -2001,8 +2389,9 @@ function UsagePillSettings(_props: PluginSettingsSectionProps) {
     <section className="space-y-3">
       <div className="flex items-center justify-between px-1">
         <p className="text-2xs text-muted-foreground">
-          Click a zone to move the pill. Interval, orientation and size are
-          configured above.
+          Click a zone to move the pill on this {config.form}. Each device
+          keeps its own position. Interval, orientation and size are configured
+          above.
         </p>
         {saving && (
           <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-primary" />
@@ -2012,20 +2401,18 @@ function UsagePillSettings(_props: PluginSettingsSectionProps) {
         <div className={disabled ? "pointer-events-none opacity-40" : ""}>
           <PositionPreview
             config={config}
-            onPick={(position) => {
-              // A preset choice clears any dragged dock position.
-              void set("overlayDock", "").then(() =>
-                set("overlayPosition", position),
-              );
-            }}
+            onPick={(position) =>
+              // A preset choice clears any dragged dock, on this device only.
+              config.setLayout({ dock: "", position })
+            }
           />
         </div>
         <div className="border-t border-border/60 px-4 py-2 text-2xs text-muted-foreground">
           {summary}
-          {disabled ? " · pill disabled" : ""}
+          {disabled ? " · the pill is not used here" : ""}
         </div>
       </div>
-      <div className={disabled ? "pointer-events-none opacity-40" : ""}>
+      <div className={config.placement === "off" ? "pointer-events-none opacity-40" : ""}>
         <ProviderFilter
           config={config}
           onChange={(csv) => void set("overlayProviders", csv)}
@@ -2037,6 +2424,11 @@ function UsagePillSettings(_props: PluginSettingsSectionProps) {
 
 export default definePluginApp((app) => {
   app.slots.experimental_appOverlay({ id: "usage-pill", component: UsagePill });
+  app.slots.experimental_threadHeaderAction({
+    id: "usage",
+    title: "Provider usage",
+    component: UsageHeaderAction,
+  });
   app.slots.settingsSection({
     id: "usage-pill",
     title: "Usage pill preview",
