@@ -16,6 +16,7 @@ import {
   definePluginApp,
   experimental_ProviderIcon,
   experimental_usePluginId,
+  experimental_useSidebarThreads,
   useRealtimeConnectionState,
   useSdk,
   useSettings,
@@ -26,6 +27,7 @@ import type {
   PluginThreadHeaderActionProps,
 } from "@get-bb/plugin-sdk/app";
 import { mergeSameAccounts, type HostIssue } from "./src/usage-dedupe.ts";
+import { orderHeaderRings } from "./src/header-order.ts";
 import {
   PLACEMENT_SETTING,
   placementFor,
@@ -1911,6 +1913,7 @@ const HEADER_COMPACT_RINGS = 3;
 const HEADER_POPOVER_WIDTH = 300;
 
 interface HeaderRingData {
+  providerId: string;
   provider: ProviderEntry;
   failed: boolean;
   left: number;
@@ -1927,6 +1930,7 @@ function headerRings(
     const failed = provider.status !== "ok" || window === null;
     const left = failed ? 0 : remaining(window!);
     return {
+      providerId: provider.providerId,
       provider,
       failed,
       left,
@@ -1946,7 +1950,7 @@ function headerRings(
  * the shared panel, as a bottom sheet on a phone and as a popover anchored
  * to the button otherwise.
  */
-function UsageHeaderAction({ isCompactViewport }: PluginThreadHeaderActionProps) {
+function UsageHeaderAction({ threadId, isCompactViewport }: PluginThreadHeaderActionProps) {
   const config = useOverlayConfig();
   const active = config.placement === "header";
   const { snapshot, loading, refresh } = useUsageSnapshot(active, config.minutes);
@@ -1957,6 +1961,10 @@ function UsageHeaderAction({ isCompactViewport }: PluginThreadHeaderActionProps)
   const vp = useViewportSize();
   const pluginId = experimental_usePluginId();
   const compact = isCompactViewport || config.form === "mobile";
+  // The thread's own agent leads the row and is never folded into "+n".
+  const { threads } = experimental_useSidebarThreads();
+  const currentProviderId =
+    threads.find((thread) => thread.id === threadId)?.providerId ?? null;
 
   const close = useCallback(() => {
     setOpen(false);
@@ -1980,20 +1988,27 @@ function UsageHeaderAction({ isCompactViewport }: PluginThreadHeaderActionProps)
   if (!active) return null;
 
   const all = headerRings(chipsOf(snapshot?.providers ?? [], config), config);
-  // A phone shows what is closest to running out; a desktop keeps the
-  // alphabetical order of the pill so every ring stays in its place.
-  const ordered = compact
-    ? [...all].sort((a, b) => Number(a.failed) - Number(b.failed) || a.left - b.left)
-    : all;
-  const shown = compact ? ordered.slice(0, HEADER_COMPACT_RINGS) : ordered;
-  const hidden = ordered.length - shown.length;
+  // The thread's provider first; then on a phone what is closest to running
+  // out, on a desktop the pill's order so every ring stays in its place.
+  const { shown, hidden } = orderHeaderRings(all, {
+    currentProviderId,
+    compact,
+    limit: HEADER_COMPACT_RINGS,
+  });
+  const ordered = [...shown, ...all.filter((ring) => !shown.includes(ring))];
   const ringSize = compact ? 18 : 16;
   const label =
     all.length === 0
       ? loading
         ? "Provider usage, loading"
         : "Provider usage"
-      : `Provider usage. ${ordered.map((ring) => ring.summary).join(". ")}`;
+      : `Provider usage. ${ordered
+          .map((ring) =>
+            ring.providerId === currentProviderId
+              ? `${ring.summary} (this thread)`
+              : ring.summary,
+          )
+          .join(". ")}`;
 
   const sheetStyle: React.CSSProperties = {
     position: "fixed",
