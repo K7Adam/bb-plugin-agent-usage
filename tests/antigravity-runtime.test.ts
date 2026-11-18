@@ -12,6 +12,7 @@ import {
   antigravityTempDir,
   EXTRACTION_MIN_AGE_MS,
   isAntigravityRequest,
+  isLegacyAntigravityRequest,
   readAntigravityHealth,
   sweepExtractions,
   versionFromInstallPath,
@@ -75,8 +76,22 @@ test("points a thread's server at the temp folder", () => {
   assert.equal(rewritten.params.threadId, "thr_1");
 });
 
-test("leaves Devin and other messages alone", () => {
+test("leaves Devin, built-in agy acp, and other messages alone", () => {
   assert.equal(withAntigravityTemp(devinStart, "D:/agy-temp"), devinStart);
+  const agyCliStart = {
+    jsonrpc: "2.0",
+    id: 10,
+    method: "thread/start",
+    params: {
+      threadId: "thr_3",
+      cwd: "C:/work",
+      options: { providerOptions: { acpDialect: "antigravity-cli", acpLaunchSpec: { ...launchSpec, command: "agy", args: ["acp"] } } },
+    },
+  };
+  assert.equal(isAntigravityRequest(agyCliStart), true);
+  assert.equal(isLegacyAntigravityRequest(agyCliStart), false);
+  assert.equal(isLegacyAntigravityRequest(threadStart), true);
+  assert.equal(withAntigravityTemp(agyCliStart, "D:/agy-temp"), agyCliStart);
   const notification = { jsonrpc: "2.0", method: "initialized" };
   assert.equal(withAntigravityTemp(notification, "D:/agy-temp"), notification);
 });

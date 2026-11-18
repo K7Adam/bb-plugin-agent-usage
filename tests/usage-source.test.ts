@@ -97,6 +97,7 @@ test("caches good results for the cache window and throttles manual refreshes", 
   advance(MIN_REFRESH_MS);
   await get(handlers, "devin-cli", true);
   assert.equal(calls.length, 3);
+  assert.equal((calls[2] as { refresh?: boolean }).refresh, true);
 });
 
 test("rejects resources of other providers", async () => {

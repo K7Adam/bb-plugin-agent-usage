@@ -20,6 +20,13 @@ export default async function plugin(bb: BbPluginApi) {
         "The agy CLI (1.5.1 or newer), started as `<command> acp`: a name on PATH or an absolute path. Any other command, such as the older agy_acp_server from the ACP registry, is started without arguments.",
       default: DEFAULT_ANTIGRAVITY_COMMAND,
     },
+    antigravitySandbox: {
+      type: "boolean",
+      label: "Antigravity terminal sandbox",
+      description:
+        "Pass `--sandbox` to `agy acp` for new threads to restrict terminal commands. Ignored for legacy `agy_acp_server`.",
+      default: false,
+    },
     overlayEnabled: {
       type: "boolean",
       label: "Usage pill overlay",
@@ -214,11 +221,12 @@ export default async function plugin(bb: BbPluginApi) {
       default: "",
     },
   });
-  const { devinCommand, antigravityCommand } = await settings.get();
+  const { devinCommand, antigravityCommand, antigravitySandbox } = await settings.get();
 
   registerProviders(bb, {
     devinCommand: devinCommand.trim() || "devin",
     antigravityCommand: antigravityCommand.trim() || DEFAULT_ANTIGRAVITY_COMMAND,
+    antigravitySandbox,
   });
   registerUsageSource(bb);
 }

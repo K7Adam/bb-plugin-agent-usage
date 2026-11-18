@@ -123,7 +123,7 @@ export function registerUsageSource(bb: BbPluginApi, now: () => number = Date.no
     if (age < (refresh ? MIN_REFRESH_MS : CACHE_MS)) return previous as Observation;
 
     try {
-      const limits = await bb.sdk.system.usageLimits({ hostId, providerId });
+      const limits = await bb.sdk.system.usageLimits({ hostId, providerId, refresh });
       const usage = limits[providerId];
       if (usage === undefined) throw new Error("Provider returned no usage information.");
       const observation = observationSchema.parse({

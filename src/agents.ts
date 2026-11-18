@@ -24,9 +24,14 @@ export const PROVIDER_LABELS: Record<UsageProviderId, string> = {
 // gets the `acp` subcommand, any other command is launched as is.
 export const DEFAULT_ANTIGRAVITY_COMMAND = "agy";
 
-export function antigravityLaunchArgs(command: string): string[] {
+export function isAgyCliCommand(command: string): boolean {
   const name = command.trim().split(/[\\/]/).pop() ?? "";
-  return /^agy(\.exe)?$/i.test(name) ? ["acp"] : [];
+  return /^agy(\.exe)?$/i.test(name);
+}
+
+export function antigravityLaunchArgs(command: string, options: { sandbox?: boolean } = {}): string[] {
+  if (!isAgyCliCommand(command)) return [];
+  return options.sandbox ? ["acp", "--sandbox"] : ["acp"];
 }
 
 export function isUsageProviderId(value: string): value is UsageProviderId {

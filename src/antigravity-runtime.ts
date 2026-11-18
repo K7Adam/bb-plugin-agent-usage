@@ -9,7 +9,7 @@ import type { Dirent } from "node:fs";
 import { readdir, rename, rm, stat } from "node:fs/promises";
 import path from "node:path";
 
-import { ANTIGRAVITY_DIALECT_ID } from "./agents.ts";
+import { ANTIGRAVITY_DIALECT_ID, isAgyCliCommand } from "./agents.ts";
 
 /** Folder under the bridge's data dir that the ACP server unpacks into. */
 export const ANTIGRAVITY_TEMP_DIR_NAME = "agy-temp";
@@ -59,6 +59,17 @@ export function antigravityCommand(message: unknown): string | null {
     : null;
 }
 
+/**
+ * True when an Antigravity request targets the legacy PyInstaller
+ * `agy_acp_server` rather than the built-in `agy acp` server. Only the legacy
+ * one-file build unpacks into `_MEI…` folders and lacks `--version`.
+ */
+export function isLegacyAntigravityRequest(message: unknown): boolean {
+  if (!isAntigravityRequest(message)) return false;
+  const command = antigravityCommand(message);
+  return command !== null && !isAgyCliCommand(command);
+}
+
 function withTempEnv(providerOptions: JsonObject, tempDir: string): JsonObject {
   const launchSpec = providerOptions.acpLaunchSpec;
   if (!isObject(launchSpec)) return providerOptions;
@@ -70,9 +81,9 @@ function withTempEnv(providerOptions: JsonObject, tempDir: string): JsonObject {
   };
 }
 
-/** Returns a copy of an Antigravity request whose server unpacks into `tempDir`; any other message comes back as is. */
+/** Returns a copy of a legacy Antigravity server request whose server unpacks into `tempDir`; `agy acp` and other messages come back as is. */
 export function withAntigravityTemp<T>(message: T, tempDir: string): T {
-  if (!isObject(message) || !isAntigravityRequest(message)) return message;
+  if (!isObject(message) || !isLegacyAntigravityRequest(message)) return message;
   const params = message.params as JsonObject;
   if (isObject(params.providerOptions)) {
     return { ...message, params: { ...params, providerOptions: withTempEnv(params.providerOptions, tempDir) } } as T;

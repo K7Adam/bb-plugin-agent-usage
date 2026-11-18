@@ -11,7 +11,6 @@ import {
   useRef,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
 import {
   definePluginApp,
   experimental_ProviderIcon,
@@ -24,10 +23,17 @@ import {
 import type {
   ExperimentalAppOverlayProps,
   PluginSettingsSectionProps,
-  PluginThreadHeaderActionProps,
+  PluginThreadAction,
+  PluginThreadActionDataInput,
+  PluginThreadActionItemInput,
 } from "@get-bb/plugin-sdk/app";
 import { mergeSameAccounts, type HostIssue } from "./src/usage-dedupe.ts";
-import { orderHeaderRings } from "./src/header-order.ts";
+import {
+  formatHeaderActionDetail,
+  formatHeaderActionLabel,
+  orderHeaderRings,
+  type HeaderActionEntry,
+} from "./src/header-order.ts";
 import {
   PLACEMENT_SETTING,
   placementFor,
@@ -1908,17 +1914,18 @@ function UsagePill(_props: ExperimentalAppOverlayProps) {
 
 // ---------- thread header display ----------
 
-/** Rings that fit the compact header before the rest folds into "+n". */
+/** Entries shown before folding into "+n" in the header action label. */
 const HEADER_COMPACT_RINGS = 3;
 const HEADER_POPOVER_WIDTH = 300;
+const HEADER_PANEL_EVENT = "agent-usage:toggle-header-panel";
 
-interface HeaderRingData {
-  providerId: string;
+interface HeaderPanelEventDetail {
+  providerId: string | null;
+}
+
+interface HeaderRingData extends HeaderActionEntry {
   provider: ProviderEntry;
-  failed: boolean;
-  left: number;
   color: string;
-  summary: string;
 }
 
 function headerRings(
@@ -1931,6 +1938,7 @@ function headerRings(
     const left = failed ? 0 : remaining(window!);
     return {
       providerId: provider.providerId,
+      displayName: provider.displayName,
       provider,
       failed,
       left,
@@ -1942,34 +1950,105 @@ function headerRings(
   });
 }
 
+interface HeaderUsageActionData {
+  active: boolean;
+  config: OverlayConfig;
+  snapshot: Snapshot | null;
+  loading: boolean;
+  providerByThreadId: ReadonlyMap<string, string>;
+}
+
 /**
- * Usage in the thread header's action row (`experimental_threadHeaderAction`):
- * always visible in a thread, covers no content and never collides with the
- * on-screen keyboard. The row is 48px with 28px controls, so it shows small
- * rings; on a phone only the tightest three, the rest as "+n". A tap opens
- * the shared panel, as a bottom sheet on a phone and as a popover anchored
- * to the button otherwise.
+ * Shared app-wide data hook for the `experimental_threadAction` header button.
+ * Runs once for the app (never per thread), sharing the same snapshot store as
+ * the floating pill and header dialog.
  */
-function UsageHeaderAction({ threadId, isCompactViewport }: PluginThreadHeaderActionProps) {
+function useUsageHeaderActionData(
+  _input: PluginThreadActionDataInput,
+): HeaderUsageActionData {
   const config = useOverlayConfig();
   const active = config.placement === "header";
-  const { snapshot, loading, refresh } = useUsageSnapshot(active, config.minutes);
+  const { snapshot, loading } = useUsageSnapshot(active, config.minutes);
+  const { threads } = experimental_useSidebarThreads();
+  const providerByThreadId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const thread of threads) {
+      if (thread.providerId) map.set(thread.id, thread.providerId);
+    }
+    return map;
+  }, [threads]);
+  return { active, config, snapshot, loading, providerByThreadId };
+}
+
+function usageHeaderActionItem({
+  thread,
+  data,
+}: PluginThreadActionItemInput<HeaderUsageActionData>): PluginThreadAction | null {
+  if (!data.active) return null;
+  const currentProviderId = data.providerByThreadId.get(thread.id) ?? null;
+  const compact = data.config.form === "mobile";
+  const all = headerRings(chipsOf(data.snapshot?.providers ?? [], data.config), data.config);
+  const { shown, hidden } = orderHeaderRings(all, {
+    currentProviderId,
+    compact,
+    limit: HEADER_COMPACT_RINGS,
+  });
+  const ordered = [...shown, ...all.filter((ring) => !shown.includes(ring))];
+  const worst = ordered.reduce(
+    (min, entry) => (entry.failed ? min : Math.min(min, entry.left)),
+    100,
+  );
+  return {
+    label: formatHeaderActionLabel(shown, hidden, {
+      loading: data.loading,
+      compact,
+    }),
+    detail: formatHeaderActionDetail(ordered, currentProviderId),
+    icon: "Gauge",
+    variant:
+      ordered.some((entry) => !entry.failed) && worst <= data.config.critBelow
+        ? "destructive"
+        : "default",
+    run: () => {
+      window.dispatchEvent(
+        new CustomEvent<HeaderPanelEventDetail>(HEADER_PANEL_EVENT, {
+          detail: { providerId: currentProviderId },
+        }),
+      );
+    },
+  };
+}
+
+/**
+ * Panel opened by the `experimental_threadAction` header button. Mounted once
+ * inside `experimental_appOverlay` so it inherits the plugin's scoped styles
+ * and renders a bottom sheet on phones or an anchored top-right card on desktop.
+ */
+function UsageHeaderDialog() {
+  const config = useOverlayConfig();
+  const active = config.placement === "header";
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<string | null>(null);
-  const [anchor, setAnchor] = useState<DOMRect | null>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
+  const { snapshot, loading, refresh } = useUsageSnapshot(active && open, config.minutes);
   const vp = useViewportSize();
-  const pluginId = experimental_usePluginId();
-  const compact = isCompactViewport || config.form === "mobile";
-  // The thread's own agent leads the row and is never folded into "+n".
-  const { threads } = experimental_useSidebarThreads();
-  const currentProviderId =
-    threads.find((thread) => thread.id === threadId)?.providerId ?? null;
+  const compact = config.form === "mobile";
 
-  const close = useCallback(() => {
-    setOpen(false);
-    buttonRef.current?.focus();
-  }, []);
+  const close = useCallback(() => setOpen(false), []);
+
+  useEffect(() => {
+    if (!active) setOpen(false);
+  }, [active]);
+
+  useEffect(() => {
+    const onToggle = () => {
+      setOpen((wasOpen) => {
+        if (!wasOpen) setTab(null);
+        return !wasOpen;
+      });
+    };
+    window.addEventListener(HEADER_PANEL_EVENT, onToggle);
+    return () => window.removeEventListener(HEADER_PANEL_EVENT, onToggle);
+  }, [compact]);
 
   useEffect(() => {
     if (!open) return;
@@ -1980,41 +2059,12 @@ function UsageHeaderAction({ threadId, isCompactViewport }: PluginThreadHeaderAc
     return () => document.removeEventListener("keydown", onKey);
   }, [open, close]);
 
-  // Re-measure the anchor when the viewport moves (rotation, keyboard).
-  useEffect(() => {
-    if (open) setAnchor(buttonRef.current?.getBoundingClientRect() ?? null);
-  }, [open, vp.w, vp.h, vp.offX, vp.offY]);
-
-  if (!active) return null;
-
-  const all = headerRings(chipsOf(snapshot?.providers ?? [], config), config);
-  // The thread's provider first; then on a phone what is closest to running
-  // out, on a desktop the pill's order so every ring stays in its place.
-  const { shown, hidden } = orderHeaderRings(all, {
-    currentProviderId,
-    compact,
-    limit: HEADER_COMPACT_RINGS,
-  });
-  const ordered = [...shown, ...all.filter((ring) => !shown.includes(ring))];
-  const ringSize = compact ? 18 : 16;
-  const label =
-    all.length === 0
-      ? loading
-        ? "Provider usage, loading"
-        : "Provider usage"
-      : `Provider usage. ${ordered
-          .map((ring) =>
-            ring.providerId === currentProviderId
-              ? `${ring.summary} (this thread)`
-              : ring.summary,
-          )
-          .join(". ")}`;
+  if (!active || !open) return null;
 
   const sheetStyle: React.CSSProperties = {
     position: "fixed",
     left: vp.offX,
     width: vp.w,
-    // the visible bottom edge, which sits above an open keyboard
     top: vp.offY + vp.h,
     transform: "translateY(-100%)",
     maxHeight: Math.max(200, vp.h * 0.8),
@@ -2023,117 +2073,56 @@ function UsageHeaderAction({ threadId, isCompactViewport }: PluginThreadHeaderAc
   };
   const popoverStyle: React.CSSProperties = {
     position: "fixed",
-    top: (anchor?.bottom ?? 48) + 6,
+    top: vp.offY + 54,
     left: clamp01(
-      (anchor?.right ?? vp.w) - HEADER_POPOVER_WIDTH,
+      vp.offX + vp.w - HEADER_POPOVER_WIDTH - 12,
       vp.offX + 8,
       Math.max(vp.offX + 8, vp.offX + vp.w - HEADER_POPOVER_WIDTH - 8),
     ),
     width: `min(${HEADER_POPOVER_WIDTH}px, ${Math.max(220, vp.w - 16)}px)`,
+    maxHeight: Math.max(180, vp.h - 68),
     zIndex: 1001,
   };
 
   return (
     <>
-      <button
-        ref={buttonRef}
-        type="button"
-        aria-label={label}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        title={compact ? undefined : label}
-        onClick={() => {
-          if (!open) setTab(null);
-          setOpen((value) => !value);
-        }}
-        // 28px tall like the row's other controls, at least 44px wide to tap
-        className="flex h-7 min-w-11 items-center justify-center gap-1 rounded-md px-1.5 text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      <div
+        onClick={close}
+        className={compact ? "bg-black/40" : undefined}
+        style={{ position: "fixed", inset: 0, zIndex: 1000 }}
+      />
+      <div
+        role="dialog"
+        aria-label="Provider usage"
+        className={`overflow-hidden border border-border bg-popover text-foreground shadow-xl ${
+          compact ? "rounded-t-2xl border-b-0" : "rounded-[10px]"
+        }`}
+        style={compact ? sheetStyle : popoverStyle}
       >
-        {shown.length === 0 ? (
-          <span className="text-2xs text-muted-foreground">
-            {loading ? "…" : "Usage"}
-          </span>
-        ) : (
-          shown.map((ring) => (
-            <span
-              key={ring.provider.key}
-              aria-hidden="true"
-              className={ring.failed ? "opacity-50" : undefined}
-            >
-              <UsageRing
-                left={ring.left}
-                color={ring.color}
-                size={ringSize}
-                stroke={2}
-              >
-                {config.iconMode === "icon" ? (
-                  <span
-                    className="grid place-items-center"
-                    style={
-                      iconToneOf(config) === "mono"
-                        ? { color: "var(--muted-foreground, #a1a1aa)", filter: "grayscale(1)" }
-                        : undefined
-                    }
-                  >
-                    <ProviderIcon
-                      providerKind="agent"
-                      provider={
-                        iconToneOf(config) === "color"
-                          ? ring.provider.provider
-                          : { ...ring.provider.provider, strings: null }
-                      }
-                      className="size-2"
-                    />
-                  </span>
-                ) : config.iconMode === "dot" ? (
-                  <span className="size-1 rounded-full" style={{ background: ring.color }} />
-                ) : null}
-              </UsageRing>
-            </span>
-          ))
+        {compact && (
+          <div aria-hidden="true" className="flex justify-center pt-2">
+            <span className="h-1 w-9 rounded-full bg-muted-foreground/30" />
+          </div>
         )}
-        {hidden > 0 && (
-          <span aria-hidden="true" className="text-2xs text-muted-foreground">
-            +{hidden}
-          </span>
-        )}
-      </button>
-      {open &&
-        createPortal(
-          // bb scopes this plugin's stylesheet to [data-bb-plugin=<id>]: a
-          // portal into <body> leaves that scope unless it carries the marker.
-          <div data-bb-plugin-root="" data-bb-plugin={pluginId} className="contents">
-            <div
-              onClick={close}
-              className={compact ? "bg-black/40" : undefined}
-              style={{ position: "fixed", inset: 0, zIndex: 1000 }}
-            />
-            <div
-              role="dialog"
-              aria-label="Provider usage"
-              className={`overflow-hidden border border-border bg-popover text-foreground shadow-xl ${
-                compact ? "rounded-t-2xl border-b-0" : "rounded-[10px]"
-              }`}
-              style={compact ? sheetStyle : popoverStyle}
-            >
-              {compact && (
-                <div aria-hidden="true" className="flex justify-center pt-2">
-                  <span className="h-1 w-9 rounded-full bg-muted-foreground/30" />
-                </div>
-              )}
-              <UsagePanel
-                snapshot={snapshot}
-                loading={loading}
-                refresh={refresh}
-                config={config}
-                tab={tab}
-                setTab={setTab}
-                onClose={close}
-              />
-            </div>
-          </div>,
-          document.body,
-        )}
+        <UsagePanel
+          snapshot={snapshot}
+          loading={loading}
+          refresh={refresh}
+          config={config}
+          tab={tab}
+          setTab={setTab}
+          onClose={close}
+        />
+      </div>
+    </>
+  );
+}
+
+function UsageOverlay(props: ExperimentalAppOverlayProps) {
+  return (
+    <>
+      <UsagePill {...props} />
+      <UsageHeaderDialog />
     </>
   );
 }
@@ -2438,11 +2427,15 @@ function UsagePillSettings(_props: PluginSettingsSectionProps) {
 }
 
 export default definePluginApp((app) => {
-  app.slots.experimental_appOverlay({ id: "usage-pill", component: UsagePill });
-  app.slots.experimental_threadHeaderAction({
+  app.slots.experimental_appOverlay({ id: "usage-pill", component: UsageOverlay });
+  app.slots.experimental_threadAction({
     id: "usage",
     title: "Provider usage",
-    component: UsageHeaderAction,
+    icon: "Gauge",
+    group: "usage",
+    placement: "header",
+    useData: useUsageHeaderActionData,
+    item: usageHeaderActionItem,
   });
   app.slots.settingsSection({
     id: "usage-pill",

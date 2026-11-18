@@ -30,6 +30,7 @@ async function setup(t: test.TestContext) {
       events.push("inner.onClose");
     },
   };
+  const agyCommands: string[] = [];
   const bridge = createAntigravityBridge(inner, {
     health: {
       loginCommand: "agy_acp_server",
@@ -37,23 +38,51 @@ async function setup(t: test.TestContext) {
       readAccount: async () => ({ email: null }),
     },
     sharedTempDir: () => path.join(root, "shared"),
+    onAgyCommand: (command) => {
+      agyCommands.push(command);
+    },
     write: (value) => {
       written.push(value);
     },
     log: () => undefined,
   });
   const context: BridgeContext = { pluginId: "agent-usage", dataDir: path.join(root, "data"), tempDir: path.join(root, "tmp") };
-  return { bridge, context, received, written, events, root };
+  return { bridge, context, received, written, events, root, agyCommands };
 }
 
-test("keeps the bridge contract", async (t) => {
+test("keeps the bridge contract without creating agy-temp until a legacy launch runs", async (t) => {
   const { bridge, context, events } = await setup(t);
   assert.equal(bridge.experimental_apiVersion, 1);
   assert.equal(typeof bridge.handleLine, "function");
   bridge.start?.(context);
-  assert.equal((await stat(path.join(context.dataDir, "agy-temp"))).isDirectory(), true);
+  await assert.rejects(stat(path.join(context.dataDir, "agy-temp")));
   bridge.onClose?.();
   assert.deepEqual(events, ["inner.start", "inner.onClose"]);
+});
+
+test("passes built-in agy acp launches and health checks straight through without hijacking TEMP", async (t) => {
+  const { bridge, context, received, written, agyCommands } = await setup(t);
+  bridge.start?.(context);
+  const agySpec = { displayName: "Google Antigravity", command: "agy", args: ["acp"], env: {} };
+  const threadStart = line({
+    jsonrpc: "2.0",
+    id: 10,
+    method: "thread/start",
+    params: { threadId: "thr_agy", options: { providerOptions: { acpDialect: "antigravity-cli", acpLaunchSpec: agySpec } } },
+  });
+  const health = line({
+    jsonrpc: "2.0",
+    id: 11,
+    method: "provider/health",
+    params: { providerOptions: { acpDialect: "antigravity-cli", acpLaunchSpec: agySpec } },
+  });
+  bridge.handleLine(threadStart);
+  bridge.handleLine(health);
+  assert.deepEqual(received, [threadStart, health]);
+  assert.deepEqual(written, []);
+  assert.deepEqual(agyCommands, ["agy", "agy"]);
+  await assert.rejects(stat(path.join(context.dataDir, "agy-temp")));
+  bridge.onClose?.();
 });
 
 test("passes Devin, notifications and unreadable lines through unchanged", async (t) => {

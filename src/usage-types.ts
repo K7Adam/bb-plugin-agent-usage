@@ -1,8 +1,8 @@
 // The `provider/usage` result shape the ACP bridge returns from a dialect's
 // `maintenance.readUsage` (providerUsageResultSchema in
-// @get-bb/plugin-sdk/provider-bridge/acp-next). The SDK does not export the
-// type, so it is restated here; windows are loose there, which is how `kind`
-// and `model` reach bb's usage panel.
+// @get-bb/plugin-sdk/provider-bridge/acp). The SDK does not export the
+// loose window fields directly, so it is restated here; windows are loose
+// there, which is how `kind` and `model` reach bb's usage panel.
 
 export type UsageWindowKind = "five-hour" | "daily" | "weekly" | "custom";
 

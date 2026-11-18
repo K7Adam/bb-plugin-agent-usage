@@ -4,10 +4,11 @@
 // read spends no quota. Requires agy 1.1.11 or newer.
 
 import { execFile } from "node:child_process";
-import { access, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
+import { isAgyCliCommand } from "../agents.ts";
 import { clampPercent, usageError, type ProviderUsageResult, type UsageWindow } from "../usage-types.ts";
 
 const MIN_AGY_VERSION = [1, 1, 11] as const;
@@ -18,6 +19,13 @@ const MAX_OUTPUT_BYTES = 512 * 1024;
 // Set when agy answered `/usage` with a model turn instead of the command, so
 // later reads do not spend quota. Lasts for the life of the host process.
 let usageCommandUnsupported = false;
+let preferredAgyCommand: string | null = null;
+
+/** Records a configured `agy` CLI command so usage reads prefer the same binary. */
+export function setPreferredAgyCommand(command: string | null): void {
+  const trimmed = command?.trim() ?? "";
+  preferredAgyCommand = trimmed.length > 0 && isAgyCliCommand(trimmed) ? trimmed : null;
+}
 
 interface ExecResult {
   stdout: string;
@@ -48,10 +56,34 @@ async function isFile(file: string): Promise<boolean> {
   }
 }
 
-/** Finds agy on PATH (honouring PATHEXT on Windows), then in its default install folders. */
-export async function findAgy(env: NodeJS.ProcessEnv = process.env, home = homedir()): Promise<string | null> {
+async function binaryStamp(file: string): Promise<{ mtimeMs: number; size: number } | null> {
+  try {
+    const info = await stat(file);
+    return { mtimeMs: Math.trunc(info.mtimeMs), size: info.size };
+  } catch {
+    return null;
+  }
+}
+
+/** Finds agy from an explicit configured path, then on PATH (honouring PATHEXT on Windows), then in default install folders. */
+export async function findAgy(
+  env: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+  preferred: string | null = preferredAgyCommand,
+): Promise<string | null> {
   const windows = process.platform === "win32";
   const extensions = windows ? (env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";").filter(Boolean) : [""];
+
+  if (preferred !== null && isAgyCliCommand(preferred) && path.isAbsolute(preferred)) {
+    if (await isFile(preferred)) return preferred;
+    if (windows && !path.extname(preferred)) {
+      for (const extension of extensions) {
+        const candidate = `${preferred}${extension.toLowerCase()}`;
+        if (await isFile(candidate)) return candidate;
+      }
+    }
+  }
+
   const dirs = (env.PATH ?? env.Path ?? "").split(path.delimiter).filter(Boolean);
   if (windows && env.LOCALAPPDATA) dirs.push(path.join(env.LOCALAPPDATA, "agy", "bin"));
   dirs.push(path.join(home, ".local", "bin"));
@@ -120,7 +152,10 @@ export function classifyAgyError(output: string): ProviderUsageResult | null {
     if (code >= 500) return usageError(`Antigravity usage service failed (HTTP ${code}).`);
     return usageError(`Antigravity usage request failed (${status || code || "unknown error"}).`);
   }
-  if (/not (logged|signed) in|run `?agy login/iu.test(output)) {
+  if (/GEMINI_API_KEY|AI Studio/iu.test(output) && /no (account )?quota|not available|usage/iu.test(output)) {
+    return usageError("GEMINI_API_KEY sessions have no account quota; view usage in Google AI Studio.");
+  }
+  if (/not (logged|signed) in|run `?agy (acp --)?login/iu.test(output)) {
     return { supported: true, usage: { status: "unauthenticated" } };
   }
   return null;
@@ -169,9 +204,21 @@ export function isModelTurn(envelope: Json): boolean {
   return (Number.isFinite(turns) && turns > 0) || (typeof conversation === "string" && conversation !== "");
 }
 
-interface VerifiedAgy {
+export interface VerifiedAgy {
   path: string;
   version: number[];
+  mtimeMs?: number;
+  size?: number;
+}
+
+export function isSameVerifiedAgy(
+  known: VerifiedAgy | null | undefined,
+  agyPath: string,
+  stamp: { mtimeMs: number; size: number } | null,
+): boolean {
+  if (!known || known.path !== agyPath) return false;
+  if (stamp === null) return known.mtimeMs === undefined && known.size === undefined;
+  return known.mtimeMs === stamp.mtimeMs && known.size === stamp.size;
 }
 
 async function runUsageCommand(knownAgy: VerifiedAgy | null): Promise<{ result: ProviderUsageResult; agy: VerifiedAgy | null }> {
@@ -182,9 +229,10 @@ async function runUsageCommand(knownAgy: VerifiedAgy | null): Promise<{ result: 
   const agy = await findAgy();
   if (agy === null) return fail(usageError("The agy CLI was not found. Install Antigravity's agy CLI to read usage."));
 
-  // The version gate runs once per agy binary; a verified version persists in
-  // the cache file, so reads after the first spawn agy only once.
-  let version = knownAgy?.path === agy ? knownAgy.version : null;
+  // The version gate runs once per installed agy binary build; re-checking when
+  // mtime/size change keeps cached version metadata accurate after in-place upgrades.
+  const stamp = await binaryStamp(agy);
+  let version = isSameVerifiedAgy(knownAgy, agy, stamp) ? knownAgy!.version : null;
   if (version === null || !isSupportedVersion(version)) {
     const versionRun = await run(agy, ["--version"], VERSION_TIMEOUT_MS);
     version = parseVersion(`${versionRun.stdout}\n${versionRun.stderr}`);
@@ -192,7 +240,7 @@ async function runUsageCommand(knownAgy: VerifiedAgy | null): Promise<{ result: 
       return fail(usageError(`agy ${MIN_AGY_VERSION.join(".")} or newer is required to read usage.`));
     }
   }
-  const verified: VerifiedAgy = { path: agy, version };
+  const verified: VerifiedAgy = { path: agy, version, ...(stamp ?? {}) };
 
   const result = await run(agy, ["-p", "/usage", "--output-format", "json", "--print-timeout", "20s"], USAGE_TIMEOUT_MS);
   const envelope = findUsageEnvelope(result.stdout);
@@ -224,7 +272,7 @@ const READ_CLAIM_MS = 60_000;
 export interface CachedUsage {
   at: number;
   result: ProviderUsageResult;
-  /** agy binary that served the last read and its version; lets later reads skip `--version`. */
+  /** agy binary that served the last read, its version, and file stamp; lets later reads skip `--version`. */
   agy?: VerifiedAgy;
 }
 
@@ -311,8 +359,29 @@ export async function readAntigravityUsage(): Promise<ProviderUsageResult> {
   return cached?.result ?? usageError("Antigravity usage is loading (agy takes about 20–30 s); it appears on the next refresh.");
 }
 
-/** The ACP server's own sign-in (it opens a Google login on its first session). */
-export async function readAntigravityAccount(env: NodeJS.ProcessEnv = process.env): Promise<{ email: string | null } | null> {
-  const geminiHome = env.GEMINI_HOME ?? path.join(homedir(), ".gemini");
-  return (await isFile(path.join(geminiHome, "antigravity-acp", "acp_token.json"))) ? { email: null } : null;
+function isTruthyEnv(value: string | undefined): boolean {
+  const trimmed = value?.trim().toLowerCase() ?? "";
+  return trimmed.length > 0 && trimmed !== "0" && trimmed !== "false";
+}
+
+/**
+ * Checks Antigravity ACP sign-in across all auth modes `agy acp` advertises:
+ * Google/Enterprise OAuth (`acp_token.json`), `GEMINI_API_KEY`, or
+ * Vertex/Enterprise ADC (`AGY_ADC_AUTH` / `GOOGLE_APPLICATION_CREDENTIALS`).
+ */
+export async function readAntigravityAccount(
+  env: NodeJS.ProcessEnv = process.env,
+  home = homedir(),
+): Promise<{ email: string | null } | null> {
+  const geminiHome = env.GEMINI_HOME?.trim() || path.join(home, ".gemini");
+  if (await isFile(path.join(geminiHome, "antigravity-acp", "acp_token.json"))) {
+    return { email: null };
+  }
+  if ((env.GEMINI_API_KEY?.trim() ?? "").length > 0) {
+    return { email: null };
+  }
+  if (isTruthyEnv(env.AGY_ADC_AUTH) || (env.GOOGLE_APPLICATION_CREDENTIALS?.trim() ?? "").length > 0) {
+    return { email: null };
+  }
+  return null;
 }

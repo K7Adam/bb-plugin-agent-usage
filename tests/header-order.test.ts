@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { orderHeaderRings } from "../src/header-order.ts";
+import {
+  formatHeaderActionDetail,
+  formatHeaderActionLabel,
+  orderHeaderRings,
+} from "../src/header-order.ts";
 
 const ring = (providerId: string, left: number, failed = false) => ({ providerId, left, failed });
 // alphabetical, as the pill lists them
@@ -49,4 +53,21 @@ test("does not mutate its input", () => {
   const before = JSON.stringify(rings);
   orderHeaderRings(rings, { currentProviderId: "codex", compact: true, limit: 3 });
   assert.equal(JSON.stringify(rings), before);
+});
+
+test("formats compact and desktop labels for the header thread action", () => {
+  const entries = [
+    { providerId: "antigravity-cli", displayName: "Google Antigravity", left: 35, failed: false, summary: "Google Antigravity: Weekly, 35% left" },
+    { providerId: "devin-cli", displayName: "Devin", left: 49, failed: false, summary: "Devin: Weekly, 49% left" },
+    { providerId: "claude-code", displayName: "Claude Code", left: 36, failed: false, summary: "Claude Code: Weekly, 36% left" },
+    { providerId: "codex", displayName: "Codex", left: 20, failed: false, summary: "Codex: Weekly, 20% left" },
+  ];
+  assert.equal(formatHeaderActionLabel([], 0, { loading: true, compact: false }), "Usage …");
+  assert.equal(formatHeaderActionLabel([], 0, { loading: false, compact: true }), "Usage");
+  assert.equal(formatHeaderActionLabel(entries.slice(0, 3), 1, { loading: false, compact: true }), "35% · +3");
+  assert.equal(formatHeaderActionLabel(entries, 0, { loading: false, compact: false }), "35% · 49% · 36% · +1");
+  assert.equal(
+    formatHeaderActionDetail(entries.slice(0, 2), "antigravity-cli"),
+    "Google Antigravity: Weekly, 35% left (this thread) · Devin: Weekly, 49% left",
+  );
 });
