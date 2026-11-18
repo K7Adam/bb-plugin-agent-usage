@@ -20,7 +20,13 @@ For Google Antigravity, the plugin additionally registers:
 - **An Antigravity ACP dialect** (`src/antigravity-dialect.ts`): renders `run_command`
   summaries (`toolSummary`), strips `Created At:`/`Completed At:` wrapper boilerplate,
   extracts exit codes, flags `BypassSandbox` commands with an **Outside of sandbox**
-  badge, and presents `invoke_subagent` as native delegation cards.
+  badge, normalizes Windows leading-slash drive paths (`/C:/...`), classifies
+  `read_file` / `grep_search` / `find_by_name` / `search_web`, and presents
+  `invoke_subagent` (including `/boost`) as native delegation cards.
+- **A Devin ACP dialect** (`src/devin-dialect.ts`): reads Devin's `_meta` tool names
+  (`cognition.ai/inferenceToolName`), working directories (`cognition.ai/cwd`), and
+  command exit codes/signals (`terminal_exit`) while filtering synthetic `tool://preview`
+  blocks.
 - **Full native & plugin skill discovery** (`src/native-roots.ts`): exposes user,
   built-in, Gemini, workspace, and enabled `agy` plugin skills (`~/.gemini/config/plugins/*/skills`)
   in bb's composer and skill catalog.

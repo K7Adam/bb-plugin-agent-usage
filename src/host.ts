@@ -1,8 +1,9 @@
 // The plugin's `bb.host` entry:
 // - `experimental_providerBridge`: bb's ACP bridge (`provider-bridge/acp`) runs
-//   both agents; two dialects add `provider/health`, `provider/usage`, and
-//   Antigravity's native tool presentation (`src/antigravity-dialect.ts`). The
-//   wrapper only isolates `TEMP`/`TMP` and skips `--version` for the legacy
+//   both agents; two dialects add `provider/health`, `provider/usage`,
+//   Antigravity's native tool presentation (`src/antigravity-dialect.ts`), and
+//   Devin's `_meta` tool identity & exit-code preservation (`src/devin-dialect.ts`).
+//   The wrapper only isolates `TEMP`/`TMP` and skips `--version` for the legacy
 //   PyInstaller `agy_acp_server`, leaving built-in `agy acp` untouched.
 // - default export (`experimental_defineHostEntry`): resolves installed
 //   Antigravity plugin skill roots on each host so bb lists them in the composer.
@@ -28,6 +29,7 @@ import {
   setPreferredAgyCommand,
 } from "./collectors/antigravity.ts";
 import { readDevinAccount, readDevinUsage } from "./collectors/devin.ts";
+import { devinDialectHooks } from "./devin-dialect.ts";
 import { resolvePluginNativeRoots } from "./native-roots.ts";
 
 const ANTIGRAVITY_LOGIN_COMMAND = "agy acp --login";
@@ -36,6 +38,7 @@ const ANTIGRAVITY_LOGIN_COMMAND = "agy acp --login";
 // installers; the bridge's dialect type requires one.
 experimental_registerAcpDialect({
   id: DEVIN_DIALECT_ID,
+  ...devinDialectHooks,
   maintenance: {
     loginCommand: "devin auth login",
     installer: () => ({ command: "devin", args: ["update"], displayCommand: "devin update" }),

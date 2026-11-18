@@ -67,6 +67,28 @@ function truncateDetail(text: string): string {
     : text;
 }
 
+// Antigravity ACP on Windows occasionally serializes file URL pathnames with a
+// leading slash (e.g. `/C:/Users/...`). Strip only that drive-letter prefix
+// while leaving POSIX absolute paths untouched.
+export function normalizeAntigravityPath(raw: string): string {
+  const trimmed = raw.trim();
+  return /^\/[A-Za-z]:[\\/]/.test(trimmed) ? trimmed.slice(1) : trimmed;
+}
+
+function pathBasename(filePath: string): string {
+  const stripped = filePath.replace(/[\\/]+$/, "");
+  const sepIndex = Math.max(stripped.lastIndexOf("/"), stripped.lastIndexOf("\\"));
+  return sepIndex >= 0 && sepIndex < stripped.length - 1 ? stripped.slice(sepIndex + 1) : stripped || filePath;
+}
+
+function firstEventLocationPath(event: AcpToolCallUpdateEvent): string | undefined {
+  for (const loc of event.locations ?? []) {
+    const path = nonEmptyString(loc?.path);
+    if (path !== undefined) return path;
+  }
+  return undefined;
+}
+
 function normalizeToolCandidate(raw: unknown): string | null {
   if (typeof raw !== "string") return null;
   const trimmed = raw.trim().toLowerCase();
@@ -357,6 +379,93 @@ export function classifyAntigravityToolCall(event: AcpToolCallUpdateEvent): AcpC
   const rawInput = recordOf(event.rawInput) ?? {};
 
   switch (toolName) {
+    case "read_file":
+    case "view_file":
+    case "view_file_outline":
+    case "view_code_item": {
+      const rawPath =
+        nonEmptyString(rawInput.Path) ??
+        nonEmptyString(rawInput.AbsolutePath) ??
+        nonEmptyString(rawInput.path) ??
+        firstEventLocationPath(event);
+      if (rawPath === undefined) return undefined;
+      const path = normalizeAntigravityPath(rawPath);
+      return {
+        item: { type: "fileRead", path },
+        presentation: {
+          label: { pending: "Reading file", completed: "Read file" },
+          icon: { glyph: "FileText" },
+          title: pathBasename(path),
+        },
+      };
+    }
+
+    case "grep_search":
+    case "code_search": {
+      const query =
+        nonEmptyString(rawInput.Query) ??
+        nonEmptyString(rawInput.query) ??
+        nonEmptyString(rawInput.Pattern) ??
+        nonEmptyString(rawInput.pattern);
+      if (query === undefined) return undefined;
+      const rawPath =
+        nonEmptyString(rawInput.SearchPath) ??
+        nonEmptyString(rawInput.path) ??
+        nonEmptyString(rawInput.Directory);
+      const path = rawPath !== undefined ? normalizeAntigravityPath(rawPath) : undefined;
+      return {
+        item: {
+          type: "search",
+          mode: "content",
+          query,
+          ...(path !== undefined ? { path } : {}),
+        },
+        presentation: {
+          label: { pending: "Searching files", completed: "Searched files" },
+          icon: { glyph: "Search" },
+          title: truncateDetail(query),
+        },
+      };
+    }
+
+    case "find_by_name": {
+      const query =
+        nonEmptyString(rawInput.Pattern) ??
+        nonEmptyString(rawInput.pattern) ??
+        nonEmptyString(rawInput.glob);
+      if (query === undefined) return undefined;
+      const rawPath = nonEmptyString(rawInput.SearchDirectory) ?? nonEmptyString(rawInput.path);
+      const path = rawPath !== undefined ? normalizeAntigravityPath(rawPath) : undefined;
+      return {
+        item: {
+          type: "search",
+          mode: "path",
+          query,
+          ...(path !== undefined ? { path } : {}),
+        },
+        presentation: {
+          label: { pending: "Finding files", completed: "Found files" },
+          icon: { glyph: "FolderOpen" },
+          title: truncateDetail(query),
+        },
+      };
+    }
+
+    case "search_web": {
+      const query = nonEmptyString(rawInput.query) ?? nonEmptyString(rawInput.Query);
+      if (query === undefined) return undefined;
+      const domain = nonEmptyString(rawInput.domain) ?? nonEmptyString(rawInput.Domain);
+      return {
+        item: { type: "webSearch", queries: [query] },
+        presentation: {
+          label: { pending: "Searching web", completed: "Searched web" },
+          icon: { glyph: "Search" },
+          title: truncateDetail(query),
+          ...(domain !== undefined ? { detail: domain } : {}),
+        },
+      };
+    }
+
     case "run_command": {
       const commandLine = nonEmptyString(rawInput.CommandLine) ?? nonEmptyString(rawInput.command);
       const summary = nonEmptyString(rawInput.toolSummary) ?? nonEmptyString(rawInput.description);

@@ -10,6 +10,7 @@ import {
   inferAntigravityToolName,
   mapAntigravityToolKind,
   normalizeAntigravityCommandEvent,
+  normalizeAntigravityPath,
   parseAntigravityCommandOutput,
 } from "../src/antigravity-dialect.ts";
 
@@ -188,4 +189,98 @@ test("classifies schedule, manage_task, swarm, run_workflow, and ask_question cl
     makeEvent({ rawInput: { questions: [{ question: "Continue?", options: ["Yes", "No"] }] } }),
   );
   assert.equal(ask?.presentation.title, "Ask question");
+});
+
+test("normalizes Windows leading-slash drive paths and classifies read_file, search, and search_web", () => {
+  assert.equal(
+    normalizeAntigravityPath("/C:/Users/me/project/package.json"),
+    "C:/Users/me/project/package.json",
+  );
+  assert.equal(normalizeAntigravityPath("/etc/hosts"), "/etc/hosts");
+
+  const read = classifyAntigravityToolCall(
+    makeEvent({
+      name: "read_file",
+      kind: "read",
+      title: "File /C:/Users/me/project/package.json",
+      locations: [{ path: "/C:/Users/me/project/package.json" }],
+      rawInput: { Path: "/C:/Users/me/project/package.json" },
+    }),
+  );
+  assert.ok(read);
+  assert.equal(read.item.type, "fileRead");
+  if (read.item.type === "fileRead") {
+    assert.equal(read.item.path, "C:/Users/me/project/package.json");
+  }
+  assert.equal(read.presentation.title, "package.json");
+  assert.equal(read.presentation.icon.glyph, "FileText");
+
+  const grep = classifyAntigravityToolCall(
+    makeEvent({
+      name: "grep_search",
+      rawInput: { Query: "registerAcpDialect", SearchPath: "/C:/Users/me/project/src" },
+    }),
+  );
+  assert.ok(grep);
+  assert.equal(grep.item.type, "search");
+  if (grep.item.type === "search") {
+    assert.equal(grep.item.mode, "content");
+    assert.equal(grep.item.query, "registerAcpDialect");
+    assert.equal(grep.item.path, "C:/Users/me/project/src");
+  }
+
+  const find = classifyAntigravityToolCall(
+    makeEvent({
+      name: "find_by_name",
+      rawInput: { Pattern: "*.test.ts", SearchDirectory: "/C:/Users/me/project" },
+    }),
+  );
+  assert.ok(find);
+  assert.equal(find.item.type, "search");
+  if (find.item.type === "search") {
+    assert.equal(find.item.mode, "path");
+    assert.equal(find.item.query, "*.test.ts");
+    assert.equal(find.item.path, "C:/Users/me/project");
+  }
+
+  const web = classifyAntigravityToolCall(
+    makeEvent({
+      name: "search_web",
+      rawInput: { query: "bb plugin sdk", domain: "getbb.app" },
+    }),
+  );
+  assert.ok(web);
+  assert.equal(web.item.type, "webSearch");
+  if (web.item.type === "webSearch") {
+    assert.deepEqual(web.item.queries, ["bb plugin sdk"]);
+  }
+  assert.equal(web.presentation.title, "bb plugin sdk");
+  assert.equal(web.presentation.detail, "getbb.app");
+});
+
+test("classifies /boost invoke_subagent events cleanly even when rawOutput is omitted", () => {
+  const classified = classifyAntigravityToolCall(
+    makeEvent({
+      toolCallId: "call_boost_1",
+      name: "invoke_subagent",
+      title: "Run invoke_subagent",
+      kind: "other",
+      rawInput: {
+        Model: "inherit",
+        Prompt: "Inspect package.json and report name and version.",
+        Role: "Package JSON Reader",
+        TypeName: "research",
+        Workspace: "inherit",
+      },
+    }),
+  );
+  assert.ok(classified);
+  assert.equal(classified.item.type, "delegation");
+  if (classified.item.type === "delegation") {
+    assert.equal(classified.item.childRef, "call_boost_1");
+    assert.equal(classified.item.label, "Package JSON Reader");
+    assert.equal(classified.item.summary, "research");
+  }
+  assert.equal(classified.presentation.title, "Package JSON Reader");
+  assert.equal(classified.presentation.detail, "research");
 });
