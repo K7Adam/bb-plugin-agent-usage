@@ -10,7 +10,7 @@
   },
   "engines": {
     "bb": ">=0.48",
-    "bbPluginSdk": ">=0.6.157"
+    "bbPluginSdk": ">=0.6.189"
   },
   "bb": {
     "name": "Devin & Antigravity",
@@ -27,7 +27,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@get-bb/plugin-sdk": "0.6.157",
+    "@get-bb/plugin-sdk": "0.6.189",
     "zod": "^4.6.5"
   },
   "devDependencies": {

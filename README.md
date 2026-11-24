@@ -33,6 +33,33 @@ For Google Antigravity, the plugin additionally registers:
 - **Optional CLI terminal sandbox**: enable `antigravitySandbox` in plugin settings to
   pass `--sandbox` to `agy acp` for new threads.
 
+Composer actions:
+
+- **Plan and goal** (both providers): `/plan` and `/goal` go to the agent's own slash
+  commands of the same name.
+- **Manual compaction** (Antigravity only): bb's compact action sends `agy`'s own
+  `/compact`. Devin finishes its `/compact` turn at once and compacts in the background,
+  where a new prompt cancels it, so bb's compact action stays off for Devin. Typing
+  `/compact` still works there if you wait for "Context compacted".
+
+Devin has two optional launch settings, applied to new threads:
+
+- `devinProcessModel`: `default`, `daemon` or `in-process` (`devin acp --process-model`).
+- `devinRefusalFallback`: comma-separated models Devin switches to, in order, when a
+  provider refuses a request under its usage policy (`devin acp --refusal-fallback`).
+
+### Antigravity Orchestrator and swarms
+
+The `Orchestrator (Neon)`, `Orchestrator (Carbon)` and `Orchestrator (Argon)` models
+appear in bb's model picker like any other Antigravity model. Their thinking level is
+not adjustable over ACP. The Planner and Executor models and their effort come from
+the `"orchestrator"` entry in Antigravity's `settings.json`, which you set in the `agy`
+terminal UI with `/model`. `agy acp` offers no per-session option or flag for them.
+
+`/swarm` is offered as an Antigravity slash command and runs over ACP. It starts several
+agents that each use quota, so try it on a small task first. The swarm board itself is
+part of Antigravity's own UI.
+
 ## Requirements
 
 On every bb machine that runs these agents:

@@ -5,13 +5,31 @@ import { registerProviders } from "./src/providers.ts";
 import { registerUsageSource } from "./src/usage-source.ts";
 
 export default async function plugin(bb: BbPluginApi) {
-  // Settings are read once per load: reload the plugin after changing one.
+  // Settings are read once per load: reload the plugin after changing one. The
+  // provider launch settings (commands, Devin process model and refusal
+  // fallback, Antigravity sandbox) are also read for every new session.
   const settings = bb.settings.define({
     devinCommand: {
       type: "string",
       label: "Devin CLI command",
       description: "The `devin` executable: a name on PATH or an absolute path. bb runs `<command> acp`.",
       default: "devin",
+    },
+    devinProcessModel: {
+      type: "select",
+      label: "Devin process model",
+      description:
+        "Where Devin's local agents run for new threads: devin's own default, the shared background daemon, or inside each `devin acp` process.",
+      options: ["default", "daemon", "in-process"],
+      experimental_optionLabels: { default: "Devin default", daemon: "Background daemon", "in-process": "In-process" },
+      default: "default",
+    },
+    devinRefusalFallback: {
+      type: "string",
+      label: "Devin refusal fallback models",
+      description:
+        "Comma-separated models Devin switches to, in order, when a provider refuses a request under its usage policy (`--refusal-fallback`). Empty turns it off.",
+      default: "",
     },
     antigravityCommand: {
       type: "string",
@@ -221,10 +239,13 @@ export default async function plugin(bb: BbPluginApi) {
       default: "",
     },
   });
-  const { devinCommand, antigravityCommand, antigravitySandbox } = await settings.get();
+  const { devinCommand, devinProcessModel, devinRefusalFallback, antigravityCommand, antigravitySandbox } =
+    await settings.get();
 
   registerProviders(bb, {
     devinCommand: devinCommand.trim() || "devin",
+    devinProcessModel,
+    devinRefusalFallback,
     antigravityCommand: antigravityCommand.trim() || DEFAULT_ANTIGRAVITY_COMMAND,
     antigravitySandbox,
   });

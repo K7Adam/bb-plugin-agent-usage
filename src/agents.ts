@@ -34,6 +34,36 @@ export function antigravityLaunchArgs(command: string, options: { sandbox?: bool
   return options.sandbox ? ["acp", "--sandbox"] : ["acp"];
 }
 
+// `devin acp --process-model`: where local agents run. Any other value makes
+// devin exit with a usage error, so only these two are ever passed.
+export const DEVIN_PROCESS_MODELS = ["daemon", "in-process"] as const;
+export type DevinProcessModel = (typeof DEVIN_PROCESS_MODELS)[number];
+
+export interface DevinLaunchOptions {
+  processModel?: unknown;
+  /** Comma-separated models for `--refusal-fallback`, tried in order. */
+  refusalFallback?: unknown;
+}
+
+function isDevinProcessModel(value: unknown): value is DevinProcessModel {
+  return (DEVIN_PROCESS_MODELS as readonly unknown[]).includes(value);
+}
+
+export function parseModelList(value: unknown): string[] {
+  if (typeof value !== "string") return [];
+  return value
+    .split(",")
+    .map((model) => model.trim())
+    .filter((model) => model.length > 0);
+}
+
+export function devinLaunchArgs(options: DevinLaunchOptions = {}): string[] {
+  const processModel = isDevinProcessModel(options.processModel) ? ["--process-model", options.processModel] : [];
+  // The flag repeats once per model; a comma inside one value would be read as part of a model name.
+  const refusalFallback = parseModelList(options.refusalFallback).flatMap((model) => ["--refusal-fallback", model]);
+  return ["acp", ...processModel, ...refusalFallback];
+}
+
 export function isUsageProviderId(value: string): value is UsageProviderId {
   return (USAGE_PROVIDER_IDS as readonly string[]).includes(value);
 }
