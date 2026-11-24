@@ -9,11 +9,22 @@ updates:
       interval: weekly
       day: monday
     open-pull-requests-limit: 5
+    ignore:
+      # @get-bb/plugin-sdk declares it as a peer dependency (^7.6.12); a newer
+      # major makes npm ci fail with ERESOLVE. Follow the SDK instead.
+      - dependency-name: "@types/better-sqlite3"
+        update-types: ["version-update:semver-major"]
+      # Matches the Node major the CI runs (setup-node 22).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     groups:
       plugin-sdk:
         patterns: ["@get-bb/plugin-sdk"]
+      # Majors (TypeScript, React types, ...) come as their own pull requests,
+      # so one breaking major does not hold back the routine updates.
       dev-dependencies:
         dependency-type: development
+        update-types: ["minor", "patch"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
