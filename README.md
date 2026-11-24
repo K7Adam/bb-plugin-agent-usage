@@ -169,6 +169,15 @@ bb plugin install . --yes
 bb plugin dev .    # rebuild and reload on change
 ```
 
+`npm run contract` starts `agy acp` and `devin acp` on this machine, runs only `initialize` and
+`session/new` (no prompt), and compares capabilities, config options, modes, built-in commands and
+`acp --help` flags with `contract/acp-contract.json`. It exits with 1 and lists the drift when an agent
+changed. Review the change, adapt the plugin if needed, then refresh the snapshot with
+`npm run contract -- --update`. Both CLIs must be installed and signed in, so this runs locally, not in CI.
+
+Releases: bump the version in a `chore: release X.Y.Z` commit, add the entry to `CHANGELOG.md`, and tag
+that commit `vX.Y.Z`.
+
 The usage source is adapted from [bb-plugin-grok-build-usage](https://github.com/MacHatter1/bb-plugin-grok-build-usage) (MIT).
 The `agy /usage` approach follows [Orca](https://github.com/stablyai/orca). Logos are from the ACP registry.
 

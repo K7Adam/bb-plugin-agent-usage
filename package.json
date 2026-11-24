@@ -24,7 +24,8 @@
   },
   "scripts": {
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "contract": "node --experimental-strip-types scripts/acp-contract.ts"
   },
   "dependencies": {
     "@get-bb/plugin-sdk": "0.6.189",

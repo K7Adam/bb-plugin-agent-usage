@@ -1,0 +1,20 @@
+version: 2
+updates:
+  # @get-bb/plugin-sdk also bundles the ACP bridge into the host artifact, so a
+  # bump changes runtime behavior. When merging one, raise engines.bbPluginSdk
+  # to the same version only if the installed bb ships it (bb plugin list).
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      plugin-sdk:
+        patterns: ["@get-bb/plugin-sdk"]
+      dev-dependencies:
+        dependency-type: development
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

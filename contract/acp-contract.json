@@ -1,0 +1,171 @@
+{
+  "versions": {
+    "antigravity": "1.5.16",
+    "devin": "devin 3000.14.30821 (a09cd7f323ee)"
+  },
+  "contract": {
+    "antigravity": {
+      "capabilities": [
+        "_meta.antigravity.systemPrompt.append",
+        "_meta.antigravity.tier",
+        "auth.logout",
+        "loadSession",
+        "load_session",
+        "promptCapabilities.audio",
+        "promptCapabilities.embeddedContext",
+        "promptCapabilities.image",
+        "sessionCapabilities.additionalDirectories",
+        "sessionCapabilities.close",
+        "sessionCapabilities.list",
+        "sessionCapabilities.load",
+        "sessionCapabilities.resume",
+        "session_capabilities.additionalDirectories",
+        "session_capabilities.close",
+        "session_capabilities.list",
+        "session_capabilities.load",
+        "session_capabilities.resume"
+      ],
+      "authMethods": [
+        "agent-platform",
+        "gemini-api-key",
+        "oauth-business",
+        "oauth-personal"
+      ],
+      "configOptions": [
+        "mode (mode, select)",
+        "model (model, select)",
+        "thought_level (thought_level, select)"
+      ],
+      "modes": [
+        "accept-edits",
+        "auto",
+        "default",
+        "plan"
+      ],
+      "commands": [
+        "/agy-customizations",
+        "/antigravity-guide",
+        "/boost",
+        "/browser",
+        "/compact",
+        "/goal",
+        "/learn",
+        "/plan",
+        "/run-workflow",
+        "/schedule",
+        "/swarm",
+        "/teamwork"
+      ],
+      "flags": [
+        "--add-dir",
+        "--agent",
+        "--app-data-dir",
+        "--app_data_dir",
+        "--cli_dir_name",
+        "--cli_log_file",
+        "--cloud_code_endpoint",
+        "--dangerously-skip-permissions",
+        "--disable-telemetry",
+        "--disable_telemetry",
+        "--gemini-dir",
+        "--gemini_dir",
+        "--help",
+        "--ide-mcp-port",
+        "--ide_mcp_port",
+        "--include-default-customizations",
+        "--is_google3_workspace",
+        "--is_google_internal",
+        "--log-file",
+        "--login",
+        "--override_user_agent_name",
+        "--process-per-session",
+        "--sandbox",
+        "--stdio",
+        "--use_stubby_auth",
+        "--worker"
+      ]
+    },
+    "devin": {
+      "capabilities": [
+        "_meta.cognition.ai/chains",
+        "_meta.cognition.ai/commandRevision",
+        "_meta.cognition.ai/documentLifecycle",
+        "_meta.cognition.ai/editableCommands",
+        "_meta.cognition.ai/megaplan",
+        "_meta.cognition.ai/mentionTypes",
+        "_meta.cognition.ai/midTurnPrompts",
+        "_meta.cognition.ai/multiRootWorkspace",
+        "_meta.cognition.ai/persistOnCreate",
+        "_meta.cognition.ai/pickup",
+        "_meta.cognition.ai/ruleMentions",
+        "_meta.cognition.ai/sessionDefaultConfigOptions",
+        "_meta.cognition.ai/sessionListContentSearch",
+        "_meta.cognition.ai/sessionListOrderBy",
+        "_meta.cognition.ai/sessionListSortDirection",
+        "_meta.cognition.ai/sessionRename",
+        "_meta.cognition.ai/sessionShare",
+        "_meta.cognition.ai/terminalLifecycle",
+        "_meta.cognition.ai/userConfig",
+        "_meta.cognition.ai/userEdits",
+        "_meta.cognition.ai/userShellCommand",
+        "auth",
+        "loadSession",
+        "mcpCapabilities.http",
+        "mcpCapabilities.sse",
+        "promptCapabilities._meta.cognition.ai/untrustedPageContent",
+        "promptCapabilities.audio",
+        "promptCapabilities.embeddedContext",
+        "promptCapabilities.image",
+        "sessionCapabilities.additionalDirectories",
+        "sessionCapabilities.close._meta.cognition.ai/force",
+        "sessionCapabilities.delete",
+        "sessionCapabilities.list"
+      ],
+      "authMethods": [
+        "devin-browser"
+      ],
+      "configOptions": [
+        "mode (mode, select)",
+        "model (model, select)",
+        "thought_level (thought_level, select)"
+      ],
+      "modes": [
+        "accept-edits",
+        "ask",
+        "bypass",
+        "plan",
+        "smart"
+      ],
+      "commands": [
+        "/ask",
+        "/billing",
+        "/bug",
+        "/bypass",
+        "/code",
+        "/compact",
+        "/context",
+        "/fast",
+        "/goal",
+        "/help",
+        "/login",
+        "/logout",
+        "/mcp",
+        "/plan",
+        "/rename",
+        "/session-stats",
+        "/share",
+        "/smart",
+        "/status",
+        "/workspace"
+      ],
+      "flags": [
+        "--agent-type",
+        "--cloud",
+        "--help",
+        "--model",
+        "--process-model",
+        "--refusal-fallback"
+      ]
+    }
+  }
+}
