@@ -37,6 +37,6 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.3.0",
     "hono": "^4.13.19",
-    "typescript": "^5.7.0"
+    "typescript": "^7.0.2"
   }
 }
