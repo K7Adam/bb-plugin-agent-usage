@@ -43,6 +43,9 @@ export const CANONICAL_ANTIGRAVITY_TOOLS: ReadonlySet<string> = new Set([
   "manage_subagents",
   "send_message",
   "swarm",
+  "read_board",
+  "post_message",
+  "swarm_wait",
   "run_workflow",
   // Background tasks & scheduling
   "manage_task",
@@ -373,6 +376,102 @@ export function antigravityCommandResult(
   };
 }
 
+type ToolLabel = { pending: string; completed: string };
+
+// The `swarm` tool of agy's /swarm coordinator: one label per action, with the
+// worker (or the swarm title) as the row title and a worker's brief as detail.
+const SWARM_ACTION_LABELS: Record<string, ToolLabel> = {
+  add: { pending: "Adding worker", completed: "Added worker" },
+  kill: { pending: "Stopping worker", completed: "Stopped worker" },
+  model: { pending: "Switching worker model", completed: "Switched worker model" },
+  models: { pending: "Listing worker models", completed: "Listed worker models" },
+  status: { pending: "Checking swarm", completed: "Checked swarm" },
+  title: { pending: "Naming swarm", completed: "Named swarm" },
+};
+
+function classifySwarmAction(event: AcpToolCallUpdateEvent, rawInput: Record<string, unknown>): AcpClassifiedToolCall {
+  const action = nonEmptyString(rawInput.action);
+  const label = (action !== undefined ? SWARM_ACTION_LABELS[action] : undefined) ?? {
+    pending: "Coordinating swarm",
+    completed: "Updated swarm",
+  };
+  const subject = action === "title" ? nonEmptyString(rawInput.title) : nonEmptyString(rawInput.name);
+  const brief = action === "add" ? nonEmptyString(rawInput.brief) : undefined;
+  return {
+    item: { type: "tool", tool: "swarm", args: event.rawInput },
+    presentation: {
+      label,
+      icon: { glyph: "Bot" },
+      title: subject ?? (action ? `Swarm ${action}` : "Swarm"),
+      ...(brief !== undefined ? { detail: truncateDetail(brief) } : {}),
+    },
+  };
+}
+
+function swarmBoardTool(
+  event: AcpToolCallUpdateEvent,
+  tool: string,
+  label: ToolLabel,
+  detail?: string,
+): AcpClassifiedToolCall {
+  return {
+    item: { type: "tool", tool, args: event.rawInput },
+    presentation: {
+      label,
+      icon: { glyph: "Bot" },
+      title: "Swarm board",
+      ...(detail !== undefined ? { detail: truncateDetail(detail) } : {}),
+    },
+  };
+}
+
+type FileChange = { path: string; kind: "add" | "update"; oldText?: string; newText?: string };
+
+// agy reports the finished write with `/C:/...` in its diff and locations, which
+// bb cannot open on Windows. Mirrors the bridge's own diff handling with the
+// drive-letter slash removed.
+function antigravityFileChanges(event: AcpToolCallUpdateEvent, rawInput: Record<string, unknown>): FileChange[] {
+  const fromDiffs: FileChange[] = [];
+  for (const entry of event.content ?? []) {
+    const block = recordOf(entry);
+    const path = nonEmptyString(block?.path);
+    if (block?.type !== "diff" || path === undefined) continue;
+    const oldText = typeof block.oldText === "string" ? block.oldText : undefined;
+    const newText = typeof block.newText === "string" ? block.newText : undefined;
+    fromDiffs.push({
+      path: normalizeAntigravityPath(path),
+      kind: oldText === undefined ? "add" : "update",
+      ...(oldText !== undefined ? { oldText } : {}),
+      ...(newText !== undefined ? { newText } : {}),
+    });
+  }
+  if (fromDiffs.length > 0) return fromDiffs;
+  const rawPath =
+    nonEmptyString(rawInput.Path) ??
+    nonEmptyString(rawInput.AbsolutePath) ??
+    nonEmptyString(rawInput.TargetFile) ??
+    nonEmptyString(rawInput.path) ??
+    firstEventLocationPath(event);
+  return rawPath === undefined ? [] : [{ path: normalizeAntigravityPath(rawPath), kind: "update" }];
+}
+
+function classifyAntigravityFileChange(
+  event: AcpToolCallUpdateEvent,
+  rawInput: Record<string, unknown>,
+): AcpClassifiedToolCall | undefined {
+  const changes = antigravityFileChanges(event, rawInput);
+  const [first] = changes;
+  if (first === undefined) return undefined;
+  return {
+    item: { type: "fileChange", changes },
+    presentation: {
+      label: { pending: "Writing file", completed: "Wrote file" },
+      icon: { glyph: "EditFile" },
+      title: changes.length === 1 ? pathBasename(first.path) : `${changes.length} files`,
+    },
+  };
+}
+
 export function classifyAntigravityToolCall(event: AcpToolCallUpdateEvent): AcpClassifiedToolCall | undefined {
   const toolName = inferAntigravityToolName(event);
   if (toolName === null) return undefined;
@@ -636,19 +735,26 @@ export function classifyAntigravityToolCall(event: AcpToolCallUpdateEvent): AcpC
       };
     }
 
-    case "swarm": {
-      const action = nonEmptyString(rawInput.action);
-      const name = nonEmptyString(rawInput.name) ?? nonEmptyString(rawInput.title);
-      return {
-        item: { type: "tool", tool: "swarm", args: event.rawInput },
-        presentation: {
-          label: { pending: "Coordinating swarm", completed: "Updated swarm" },
-          icon: { glyph: "Bot" },
-          title: action ? `Swarm ${action}` : "Swarm",
-          ...(name !== undefined ? { detail: truncateDetail(name) } : {}),
-        },
-      };
+    case "swarm":
+      return classifySwarmAction(event, rawInput);
+
+    case "read_board":
+      return swarmBoardTool(event, "read_board", { pending: "Reading swarm board", completed: "Read swarm board" });
+
+    case "post_message": {
+      const message =
+        nonEmptyString(rawInput.message) ?? nonEmptyString(rawInput.text) ?? nonEmptyString(rawInput.Message);
+      return swarmBoardTool(event, "post_message", { pending: "Posting to swarm board", completed: "Posted to swarm board" }, message);
     }
+
+    case "swarm_wait":
+      return swarmBoardTool(event, "swarm_wait", { pending: "Waiting for the swarm", completed: "Swarm replied" });
+
+    case "write_file":
+    case "edit_file":
+    case "replace_file_content":
+    case "multi_replace_file_content":
+      return classifyAntigravityFileChange(event, rawInput);
 
     case "run_workflow": {
       const description = nonEmptyString(rawInput.Description);

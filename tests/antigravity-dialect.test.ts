@@ -175,10 +175,11 @@ test("classifies schedule, manage_task, swarm, run_workflow, and ask_question cl
   assert.equal(task?.presentation.title, "kill: task-9");
 
   const swarm = classifyAntigravityToolCall(
-    makeEvent({ rawInput: { action: "add", name: "verifier" } }),
+    makeEvent({ rawInput: { action: "add", name: "verifier", brief: "Check the parser diff." } }),
   );
-  assert.equal(swarm?.presentation.title, "Swarm add");
-  assert.equal(swarm?.presentation.detail, "verifier");
+  assert.equal(swarm?.presentation.label.completed, "Added worker");
+  assert.equal(swarm?.presentation.title, "verifier");
+  assert.equal(swarm?.presentation.detail, "Check the parser diff.");
 
   const wf = classifyAntigravityToolCall(
     makeEvent({ rawInput: { Script: "pass", Description: "Parallel audit" } }),
@@ -283,4 +284,106 @@ test("classifies /boost invoke_subagent events cleanly even when rawOutput is om
   }
   assert.equal(classified.presentation.title, "Package JSON Reader");
   assert.equal(classified.presentation.detail, "research");
+});
+
+test("labels each swarm action by what it does", () => {
+  const swarm = (rawInput: Record<string, unknown>) => classifyAntigravityToolCall(makeEvent({ rawInput }));
+
+  const titled = swarm({ action: "title", title: "the parser rewrite" });
+  assert.deepEqual(titled?.presentation.label, { pending: "Naming swarm", completed: "Named swarm" });
+  assert.equal(titled?.presentation.title, "the parser rewrite");
+
+  const killed = swarm({ action: "kill", name: "py" });
+  assert.deepEqual(killed?.presentation.label, { pending: "Stopping worker", completed: "Stopped worker" });
+  assert.equal(killed?.presentation.title, "py");
+
+  const status = swarm({ action: "status" });
+  assert.deepEqual(status?.presentation.label, { pending: "Checking swarm", completed: "Checked swarm" });
+  assert.equal(status?.presentation.title, "Swarm status");
+
+  // agy names the tool, so an action this plugin does not know still reads as swarm.
+  const unknown = classifyAntigravityToolCall(makeEvent({ name: "swarm", rawInput: { action: "rebalance" } }));
+  assert.deepEqual(unknown?.presentation.label, { pending: "Coordinating swarm", completed: "Updated swarm" });
+  assert.equal(unknown?.presentation.title, "Swarm rebalance");
+});
+
+test("classifies the swarm board tools instead of the generic tool row", () => {
+  assert.equal(inferAntigravityToolName(makeEvent({ name: "read_board" })), "read_board");
+  assert.equal(inferAntigravityToolName(makeEvent({ name: "post_message" })), "post_message");
+  assert.equal(inferAntigravityToolName(makeEvent({ name: "swarm_wait" })), "swarm_wait");
+
+  const read = classifyAntigravityToolCall(makeEvent({ name: "read_board", rawInput: {} }));
+  assert.deepEqual(read?.presentation.label, { pending: "Reading swarm board", completed: "Read swarm board" });
+  assert.equal(read?.presentation.title, "Swarm board");
+  assert.equal(read?.item.type, "tool");
+
+  const post = classifyAntigravityToolCall(
+    makeEvent({ name: "post_message", rawInput: { message: "@py please also add a test" } }),
+  );
+  assert.deepEqual(post?.presentation.label, { pending: "Posting to swarm board", completed: "Posted to swarm board" });
+  assert.equal(post?.presentation.detail, "@py please also add a test");
+
+  const wait = classifyAntigravityToolCall(makeEvent({ name: "swarm_wait", rawInput: {} }));
+  assert.deepEqual(wait?.presentation.label, { pending: "Waiting for the swarm", completed: "Swarm replied" });
+});
+
+// Recorded from agy 1.5.16 `acp` on Windows: the completed update of write_file
+// reports `locations` and the diff path with a leading slash before the drive.
+test("reports agy file writes with a usable Windows path", () => {
+  const completed = classifyAntigravityToolCall(
+    makeEvent({
+      name: "write_file",
+      kind: "edit",
+      status: "completed",
+      title: "File /C:/Users/me/project/probe.txt",
+      locations: [{ path: "/C:/Users/me/project/probe.txt" }],
+      rawInput: { Content: "hi", Path: "C:\Users\me\project\probe.txt" },
+      content: [{ type: "diff", path: "/C:/Users/me/project/probe.txt", newText: "hi" }],
+    } as Partial<AcpToolCallUpdateEvent>),
+  );
+  assert.ok(completed);
+  assert.equal(completed.item.type, "fileChange");
+  if (completed.item.type === "fileChange") {
+    assert.deepEqual(completed.item.changes, [{ path: "C:/Users/me/project/probe.txt", kind: "add", newText: "hi" }]);
+  }
+  assert.equal(completed.presentation.title, "probe.txt");
+
+  const edited = classifyAntigravityToolCall(
+    makeEvent({
+      name: "replace_file_content",
+      kind: "edit",
+      content: [{ type: "diff", path: "/C:/Users/me/project/a.ts", oldText: "let a = 1", newText: "let a = 2" }],
+    } as Partial<AcpToolCallUpdateEvent>),
+  );
+  assert.ok(edited);
+  if (edited.item.type === "fileChange") {
+    assert.deepEqual(edited.item.changes, [
+      { path: "C:/Users/me/project/a.ts", kind: "update", oldText: "let a = 1", newText: "let a = 2" },
+    ]);
+  }
+
+  // The tool_call that starts the write has no diff yet: its path comes from rawInput.
+  const started = classifyAntigravityToolCall(
+    makeEvent({
+      sessionUpdate: "tool_call",
+      name: "write_file",
+      kind: "edit",
+      rawInput: { Content: "hi", Path: "/C:/Users/me/project/probe.txt" },
+    }),
+  );
+  assert.ok(started);
+  if (started.item.type === "fileChange") {
+    assert.deepEqual(started.item.changes, [{ path: "C:/Users/me/project/probe.txt", kind: "update" }]);
+  }
+
+  // POSIX paths stay as they are.
+  const posix = classifyAntigravityToolCall(
+    makeEvent({
+      name: "write_file",
+      content: [{ type: "diff", path: "/home/me/project/probe.txt", newText: "hi" }],
+    } as Partial<AcpToolCallUpdateEvent>),
+  );
+  if (posix?.item.type === "fileChange") {
+    assert.equal(posix.item.changes[0]?.path, "/home/me/project/probe.txt");
+  }
 });
