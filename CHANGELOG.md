@@ -4,6 +4,8 @@ Each release is tagged `vX.Y.Z` on its `chore: release X.Y.Z` commit.
 
 ## Unreleased
 
+- Restore real quota rings in thread headers. The replacement header action could only show text and folded into the thread menu, while the setting still promised rings.
+- Align usage setting labels and descriptions with both displays: the floating pill and the thread-header rings.
 - Add `npm run contract`, a local check of what `agy acp` and `devin acp` report (capabilities, config options, modes, built-in commands, flags) against `contract/acp-contract.json`. It sends no prompt.
 - Add Dependabot for npm and GitHub Actions.
 

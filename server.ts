@@ -47,9 +47,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     overlayEnabled: {
       type: "boolean",
-      label: "Usage pill overlay",
+      label: "Usage display",
       description:
-        "Show a floating pill with the remaining plan quota of every provider that reports usage to bb.",
+        "Show the remaining plan quota of every provider that reports usage to bb.",
       default: true,
     },
     overlayPlacementDesktop: {
@@ -72,9 +72,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     overlayRefreshMinutes: {
       type: "number",
-      label: "Usage pill refresh interval (minutes)",
+      label: "Usage refresh interval (minutes)",
       description:
-        "How often the pill polls provider usage. 0 disables background polling; the popup's refresh button always works.",
+        "How often usage displays poll provider usage. 0 disables background polling. The details panel's refresh button always works.",
       default: 2,
     },
     overlayPosition: {
@@ -123,7 +123,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     overlayColorMode: {
       type: "select",
-      label: "Usage pill ring color",
+      label: "Usage ring color",
       description:
         "adaptive: green→amber→red by remaining quota · monochrome: always neutral · severity: neutral until warn · accent: theme primary · custom: your own color. Warn/critical overrides apply except in monochrome.",
       options: ["adaptive", "monochrome", "severity", "accent", "custom"],
@@ -145,7 +145,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     overlayIconTone: {
       type: "select",
-      label: "Usage pill icon color",
+      label: "Usage icon color",
       description:
         "auto: monochrome icons only when rings are monochrome · color: brand colors · mono: neutral · ring: icon takes the ring's status color.",
       options: ["auto", "color", "mono", "ring"],
@@ -159,7 +159,7 @@ export default async function plugin(bb: BbPluginApi) {
     },
     overlayIconMode: {
       type: "select",
-      label: "Usage pill chip content",
+      label: "Usage ring content",
       description: "What sits inside each usage ring.",
       options: ["icon", "dot", "none"],
       experimental_optionLabels: {
@@ -172,13 +172,13 @@ export default async function plugin(bb: BbPluginApi) {
     overlayShowPercent: {
       type: "boolean",
       label: "Show percent next to rings",
-      description: "Display the remaining quota as a number beside each ring.",
+      description: "Display the remaining quota as a number beside each ring. Floating pill only.",
       default: false,
     },
     overlayHeadline: {
       type: "select",
-      label: "Usage pill headline window",
-      description: "Which limit window drives each chip.",
+      label: "Usage headline window",
+      description: "Which limit window drives each ring.",
       options: ["weekly", "tightest", "first"],
       experimental_optionLabels: {
         weekly: "Weekly window (or first)",
@@ -214,7 +214,7 @@ export default async function plugin(bb: BbPluginApi) {
     overlayPulseCritical: {
       type: "boolean",
       label: "Pulse critical chips",
-      description: "Chips at or below the critical threshold pulse gently.",
+      description: "Chips at or below the critical threshold pulse gently. Floating pill only.",
       default: false,
     },
     overlayMobileCompact: {
@@ -233,9 +233,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     overlayProviders: {
       type: "string",
-      label: "Providers shown in the pill",
+      label: "Providers shown in usage displays",
       description:
-        "Comma-separated provider ids to show; empty shows every provider that reports usage.",
+        "Comma-separated provider ids to show. Empty shows every provider that reports usage.",
       default: "",
     },
   });

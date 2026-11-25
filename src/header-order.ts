@@ -71,3 +71,33 @@ export function formatHeaderActionDetail(
     )
     .join(" · ");
 }
+
+export interface LegacyThreadHeaderActionRegistration<TComponent> {
+  id: string;
+  title: string;
+  component: TComponent;
+}
+
+export interface HeaderUsageSlots<TComponent, TModern> {
+  experimental_threadHeaderAction?(
+    registration: LegacyThreadHeaderActionRegistration<TComponent>,
+  ): void;
+  experimental_threadAction(registration: TModern): void;
+}
+
+/**
+ * Registers the ring header component when the host still exposes the legacy
+ * `experimental_threadHeaderAction` slot, falling back to `experimental_threadAction`.
+ */
+export function registerHeaderUsageSlot<TComponent, TModern>(
+  slots: HeaderUsageSlots<TComponent, TModern>,
+  legacy: LegacyThreadHeaderActionRegistration<TComponent>,
+  modern: TModern,
+): "legacy" | "modern" {
+  if (typeof slots.experimental_threadHeaderAction === "function") {
+    slots.experimental_threadHeaderAction(legacy);
+    return "legacy";
+  }
+  slots.experimental_threadAction(modern);
+  return "modern";
+}

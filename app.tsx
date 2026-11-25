@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   definePluginApp,
   experimental_ProviderIcon,
@@ -26,13 +27,16 @@ import type {
   PluginThreadAction,
   PluginThreadActionDataInput,
   PluginThreadActionItemInput,
+  PluginThreadActionRegistration,
 } from "@get-bb/plugin-sdk/app";
 import { mergeSameAccounts, type HostIssue } from "./src/usage-dedupe.ts";
 import {
   formatHeaderActionDetail,
   formatHeaderActionLabel,
   orderHeaderRings,
+  registerHeaderUsageSlot,
   type HeaderActionEntry,
+  type HeaderUsageSlots,
 } from "./src/header-order.ts";
 import {
   PLACEMENT_SETTING,
@@ -1950,6 +1954,216 @@ function headerRings(
   });
 }
 
+interface LegacyThreadHeaderActionProps {
+  threadId: string;
+  projectId: string;
+  isCompactViewport: boolean;
+}
+
+/**
+ * Usage in the thread header's action row (`experimental_threadHeaderAction`):
+ * always visible in a thread, covers no content and never collides with the
+ * on-screen keyboard. The row is 48px with 28px controls, so it shows small
+ * rings. On a phone the thread's provider leads, the tightest rings follow
+ * within the small row, and the rest collapses to "+n". A tap opens
+ * the shared panel, as a bottom sheet on a phone and as a popover anchored
+ * to the button otherwise.
+ */
+function UsageHeaderAction({ threadId, isCompactViewport }: LegacyThreadHeaderActionProps) {
+  const config = useOverlayConfig();
+  const active = config.placement === "header";
+  const { snapshot, loading, refresh } = useUsageSnapshot(active, config.minutes);
+  const [open, setOpen] = useState(false);
+  const [tab, setTab] = useState<string | null>(null);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const vp = useViewportSize();
+  const pluginId = experimental_usePluginId();
+  const compact = isCompactViewport || config.form === "mobile";
+  // The thread's own agent leads the row and is never folded into "+n".
+  const { threads } = experimental_useSidebarThreads();
+  const currentProviderId =
+    threads.find((thread) => thread.id === threadId)?.providerId ?? null;
+
+  const close = useCallback(() => {
+    setOpen(false);
+    buttonRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") close();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, close]);
+
+  // Re-measure the anchor when the viewport moves (rotation, keyboard).
+  useEffect(() => {
+    if (open) setAnchor(buttonRef.current?.getBoundingClientRect() ?? null);
+  }, [open, vp.w, vp.h, vp.offX, vp.offY]);
+
+  if (!active) return null;
+
+  const all = headerRings(chipsOf(snapshot?.providers ?? [], config), config);
+  // The thread's provider first. Then on a phone what is closest to running
+  // out, on a desktop the pill's order so every ring stays in its place.
+  const { shown, hidden } = orderHeaderRings(all, {
+    currentProviderId,
+    compact,
+    limit: HEADER_COMPACT_RINGS,
+  });
+  const ordered = [...shown, ...all.filter((ring) => !shown.includes(ring))];
+  const ringSize = compact ? 18 : 16;
+  const label =
+    all.length === 0
+      ? loading
+        ? "Provider usage, loading"
+        : "Provider usage"
+      : `Provider usage. ${ordered
+          .map((ring) =>
+            ring.providerId === currentProviderId
+              ? `${ring.summary} (this thread)`
+              : ring.summary,
+          )
+          .join(". ")}`;
+
+  const sheetStyle: React.CSSProperties = {
+    position: "fixed",
+    left: vp.offX,
+    width: vp.w,
+    // the visible bottom edge, which sits above an open keyboard
+    top: vp.offY + vp.h,
+    transform: "translateY(-100%)",
+    maxHeight: Math.max(200, vp.h * 0.8),
+    paddingBottom: "env(safe-area-inset-bottom)",
+    zIndex: 1001,
+  };
+  const popoverStyle: React.CSSProperties = {
+    position: "fixed",
+    top: (anchor?.bottom ?? 48) + 6,
+    left: clamp01(
+      (anchor?.right ?? vp.w) - HEADER_POPOVER_WIDTH,
+      vp.offX + 8,
+      Math.max(vp.offX + 8, vp.offX + vp.w - HEADER_POPOVER_WIDTH - 8),
+    ),
+    width: `min(${HEADER_POPOVER_WIDTH}px, ${Math.max(220, vp.w - 16)}px)`,
+    zIndex: 1001,
+  };
+
+  return (
+    <>
+      <button
+        ref={buttonRef}
+        type="button"
+        aria-label={label}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={compact ? undefined : label}
+        onClick={() => {
+          if (!open) setTab(null);
+          setOpen((value) => !value);
+        }}
+        // 28px tall like the row's other controls, at least 44px wide to tap
+        className="flex h-7 min-w-11 items-center justify-center gap-1 rounded-md px-1.5 text-foreground transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        {shown.length === 0 ? (
+          <span className="text-2xs text-muted-foreground">
+            {loading ? "…" : "Usage"}
+          </span>
+        ) : (
+          shown.map((ring) => (
+            <span
+              key={ring.provider.key}
+              aria-hidden="true"
+              className={ring.failed ? "opacity-50" : undefined}
+            >
+              <UsageRing
+                left={ring.left}
+                color={ring.color}
+                size={ringSize}
+                stroke={2}
+              >
+                {config.iconMode === "icon" ? (
+                  (() => {
+                    const iconTone = iconToneOf(config);
+                    return (
+                      <span
+                        className="grid place-items-center"
+                        style={
+                          iconTone === "mono"
+                            ? { color: "var(--muted-foreground, #a1a1aa)", filter: "grayscale(1)" }
+                            : iconTone === "ring"
+                              ? { color: ring.color }
+                              : undefined
+                        }
+                      >
+                        <ProviderIcon
+                          providerKind="agent"
+                          provider={
+                            iconTone === "color"
+                              ? ring.provider.provider
+                              : { ...ring.provider.provider, strings: null }
+                          }
+                          className="size-2"
+                        />
+                      </span>
+                    );
+                  })()
+                ) : config.iconMode === "dot" ? (
+                  <span className="size-1 rounded-full" style={{ background: ring.color }} />
+                ) : null}
+              </UsageRing>
+            </span>
+          ))
+        )}
+        {hidden > 0 && (
+          <span aria-hidden="true" className="text-2xs text-muted-foreground">
+            +{hidden}
+          </span>
+        )}
+      </button>
+      {open &&
+        createPortal(
+          // bb scopes this plugin's stylesheet to [data-bb-plugin=<id>]: a
+          // portal into <body> leaves that scope unless it carries the marker.
+          <div data-bb-plugin-root="" data-bb-plugin={pluginId} className="contents">
+            <div
+              onClick={close}
+              className={compact ? "bg-black/40" : undefined}
+              style={{ position: "fixed", inset: 0, zIndex: 1000 }}
+            />
+            <div
+              role="dialog"
+              aria-label="Provider usage"
+              className={`overflow-hidden border border-border bg-popover text-foreground shadow-xl ${
+                compact ? "rounded-t-2xl border-b-0" : "rounded-[10px]"
+              }`}
+              style={compact ? sheetStyle : popoverStyle}
+            >
+              {compact && (
+                <div aria-hidden="true" className="flex justify-center pt-2">
+                  <span className="h-1 w-9 rounded-full bg-muted-foreground/30" />
+                </div>
+              )}
+              <UsagePanel
+                snapshot={snapshot}
+                loading={loading}
+                refresh={refresh}
+                config={config}
+                tab={tab}
+                setTab={setTab}
+                onClose={close}
+              />
+            </div>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
 interface HeaderUsageActionData {
   active: boolean;
   config: OverlayConfig;
@@ -2428,15 +2642,26 @@ function UsagePillSettings(_props: PluginSettingsSectionProps) {
 
 export default definePluginApp((app) => {
   app.slots.experimental_appOverlay({ id: "usage-pill", component: UsageOverlay });
-  app.slots.experimental_threadAction({
-    id: "usage",
-    title: "Provider usage",
-    icon: "Gauge",
-    group: "usage",
-    placement: "header",
-    useData: useUsageHeaderActionData,
-    item: usageHeaderActionItem,
-  });
+  registerHeaderUsageSlot(
+    app.slots as unknown as HeaderUsageSlots<
+      typeof UsageHeaderAction,
+      PluginThreadActionRegistration<HeaderUsageActionData>
+    >,
+    {
+      id: "usage",
+      title: "Provider usage",
+      component: UsageHeaderAction,
+    },
+    {
+      id: "usage",
+      title: "Provider usage",
+      icon: "Gauge",
+      group: "usage",
+      placement: "header",
+      useData: useUsageHeaderActionData,
+      item: usageHeaderActionItem,
+    },
+  );
   app.slots.settingsSection({
     id: "usage-pill",
     title: "Usage pill preview",

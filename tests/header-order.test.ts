@@ -5,6 +5,7 @@ import {
   formatHeaderActionDetail,
   formatHeaderActionLabel,
   orderHeaderRings,
+  registerHeaderUsageSlot,
 } from "../src/header-order.ts";
 
 const ring = (providerId: string, left: number, failed = false) => ({ providerId, left, failed });
@@ -70,4 +71,43 @@ test("formats compact and desktop labels for the header thread action", () => {
     formatHeaderActionDetail(entries.slice(0, 2), "antigravity-cli"),
     "Google Antigravity: Weekly, 35% left (this thread) · Devin: Weekly, 49% left",
   );
+});
+
+test("registerHeaderUsageSlot uses experimental_threadHeaderAction when present", () => {
+  const legacyCalls: Array<{ thisObj: unknown; registration: unknown }> = [];
+  const modernCalls: unknown[] = [];
+  const legacy = { id: "usage", title: "Provider usage", component: () => null };
+  const modern = { id: "usage", title: "Provider usage", placement: "header" as const };
+  const slots = {
+    experimental_threadHeaderAction(registration: unknown) {
+      legacyCalls.push({ thisObj: this, registration });
+    },
+    experimental_threadAction(registration: unknown) {
+      modernCalls.push(registration);
+    },
+  };
+
+  const result = registerHeaderUsageSlot(slots, legacy, modern);
+  assert.equal(result, "legacy");
+  assert.equal(legacyCalls.length, 1);
+  assert.equal(legacyCalls[0]?.thisObj, slots);
+  assert.equal(legacyCalls[0]?.registration, legacy);
+  assert.equal(modernCalls.length, 0);
+});
+
+test("registerHeaderUsageSlot falls back to experimental_threadAction when legacy slot is absent", () => {
+  const modernCalls: Array<{ thisObj: unknown; registration: unknown }> = [];
+  const legacy = { id: "usage", title: "Provider usage", component: () => null };
+  const modern = { id: "usage", title: "Provider usage", placement: "header" as const };
+  const slots = {
+    experimental_threadAction(registration: unknown) {
+      modernCalls.push({ thisObj: this, registration });
+    },
+  };
+
+  const result = registerHeaderUsageSlot(slots, legacy, modern);
+  assert.equal(result, "modern");
+  assert.equal(modernCalls.length, 1);
+  assert.equal(modernCalls[0]?.thisObj, slots);
+  assert.equal(modernCalls[0]?.registration, modern);
 });

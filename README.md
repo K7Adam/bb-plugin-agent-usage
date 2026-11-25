@@ -112,9 +112,9 @@ Desktop and mobile are set separately (Settings → Devin & Antigravity):
   mobile (browser storage), so dragging it on one device no longer moves it on another.
   `overlayPosition` and `overlayDock` are only the starting point for a device that has not been
   arranged yet. Dragging the pill onto the dismiss target turns it off for that form factor only.
-- **header**: a live quota button in each thread's header (`experimental_threadAction` with
-  `placement: "header"`), leading with the thread's own provider. Tapping it opens the usage details
-  as a bottom sheet on phones or a popover card on desktop.
+- **header**: small rings in each thread's header row, leading with the thread's own provider. On a
+  phone the providers closest to their limit follow it, the rest collapses to "+n", and a tap opens
+  the details as a bottom sheet. On a desktop every ring, with a popover anchored to the rings.
 - Viewports up to 520px wide count as mobile.
 
 ## How usage is read
