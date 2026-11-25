@@ -2,7 +2,7 @@
 
 Each release is tagged `vX.Y.Z` on its `chore: release X.Y.Z` commit.
 
-## Unreleased
+## 0.3.2 - 2026-11-25
 
 - Restore real quota rings in thread headers. The replacement header action could only show text and folded into the thread menu, while the setting still promised rings.
 - Align usage setting labels and descriptions with both displays: the floating pill and the thread-header rings.
