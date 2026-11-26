@@ -1,7 +1,7 @@
 {
   "versions": {
-    "antigravity": "1.5.16",
-    "devin": "devin 3000.14.30821 (a09cd7f323ee)"
+    "antigravity": "1.5.18",
+    "devin": "devin 3000.15.14 (cfa79668e1a5)"
   },
   "contract": {
     "antigravity": {
@@ -112,6 +112,7 @@
         "loadSession",
         "mcpCapabilities.http",
         "mcpCapabilities.sse",
+        "promptCapabilities._meta.cognition.ai/cloudSetupOrgId",
         "promptCapabilities._meta.cognition.ai/untrustedPageContent",
         "promptCapabilities.audio",
         "promptCapabilities.embeddedContext",
