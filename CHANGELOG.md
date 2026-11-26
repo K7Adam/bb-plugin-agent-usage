@@ -2,6 +2,10 @@
 
 Each release is tagged `vX.Y.Z` on its `chore: release X.Y.Z` commit.
 
+## Unreleased
+
+- Show the header usage rings on the new-thread composer too. The provider selected there leads the rings until the first message creates a thread.
+
 ## 0.3.2 - 2026-11-25
 
 - Restore real quota rings in thread headers. The replacement header action could only show text and folded into the thread menu, while the setting still promised rings.

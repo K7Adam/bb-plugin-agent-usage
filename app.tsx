@@ -15,8 +15,10 @@ import { createPortal } from "react-dom";
 import {
   definePluginApp,
   experimental_ProviderIcon,
+  experimental_usePanelTabs,
   experimental_usePluginId,
   experimental_useSidebarThreads,
+  useComposer,
   useRealtimeConnectionState,
   useSdk,
   useSettings,
@@ -1955,9 +1957,13 @@ function headerRings(
 }
 
 interface LegacyThreadHeaderActionProps {
-  threadId: string;
-  projectId: string;
+  threadId?: string;
+  projectId?: string;
   isCompactViewport: boolean;
+  /** Provider to lead with when there is no existing thread to derive it from. */
+  leadProviderId?: string;
+  /** Accessible description for the leading provider. */
+  currentProviderLabel?: string;
 }
 
 /**
@@ -1969,7 +1975,7 @@ interface LegacyThreadHeaderActionProps {
  * the shared panel, as a bottom sheet on a phone and as a popover anchored
  * to the button otherwise.
  */
-function UsageHeaderAction({ threadId, isCompactViewport }: LegacyThreadHeaderActionProps) {
+function UsageHeaderAction({ threadId, isCompactViewport, leadProviderId, currentProviderLabel = "this thread" }: LegacyThreadHeaderActionProps) {
   const config = useOverlayConfig();
   const active = config.placement === "header";
   const { snapshot, loading, refresh } = useUsageSnapshot(active, config.minutes);
@@ -1983,7 +1989,9 @@ function UsageHeaderAction({ threadId, isCompactViewport }: LegacyThreadHeaderAc
   // The thread's own agent leads the row and is never folded into "+n".
   const { threads } = experimental_useSidebarThreads();
   const currentProviderId =
-    threads.find((thread) => thread.id === threadId)?.providerId ?? null;
+    leadProviderId ??
+    threads.find((thread) => thread.id === threadId)?.providerId ??
+    null;
 
   const close = useCallback(() => {
     setOpen(false);
@@ -2024,7 +2032,7 @@ function UsageHeaderAction({ threadId, isCompactViewport }: LegacyThreadHeaderAc
       : `Provider usage. ${ordered
           .map((ring) =>
             ring.providerId === currentProviderId
-              ? `${ring.summary} (this thread)`
+              ? `${ring.summary} (${currentProviderLabel})`
               : ring.summary,
           )
           .join(". ")}`;
@@ -2161,6 +2169,44 @@ function UsageHeaderAction({ threadId, isCompactViewport }: LegacyThreadHeaderAc
           document.body,
         )}
     </>
+  );
+}
+
+/**
+ * Header-style usage on bb's root compose surface. bb has no new-thread header
+ * slot, so a bare composer customization supplies the surface-scoped composer
+ * and panel state, while the control itself is portalled to the top-right of
+ * the window. It hides while that surface's side panel owns the top strip. The
+ * selected composer provider leads because no thread exists yet.
+ */
+function UsageNewThreadHeader() {
+  const config = useOverlayConfig();
+  const composer = useComposer();
+  const panel = experimental_usePanelTabs();
+  const pluginId = experimental_usePluginId();
+  const active = config.placement === "header" && !panel.open;
+  const compact = config.form === "mobile";
+
+  if (!active) return null;
+
+  return createPortal(
+    <div data-bb-plugin-root="" data-bb-plugin={pluginId} className="contents">
+      <div
+        className="fixed"
+        style={{
+          zIndex: 39,
+          top: `calc(${compact ? "0.375rem" : "0.625rem"} + env(safe-area-inset-top))`,
+          right: `calc(${compact ? "3.5rem" : "3rem"} + env(safe-area-inset-right) + var(--bb-window-frame-lip, 0px))`,
+        }}
+      >
+        <UsageHeaderAction
+          isCompactViewport={compact}
+          leadProviderId={composer.selection?.providerId}
+          currentProviderLabel="selected provider"
+        />
+      </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -2662,6 +2708,17 @@ export default definePluginApp((app) => {
       item: usageHeaderActionItem,
     },
   );
+  app.composer.customize({
+    id: "new-thread-usage-header",
+    scopes: ["new-thread"],
+    banners: [
+      {
+        id: "usage-header",
+        chrome: "bare",
+        component: UsageNewThreadHeader,
+      },
+    ],
+  });
   app.slots.settingsSection({
     id: "usage-pill",
     title: "Usage pill preview",
