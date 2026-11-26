@@ -2,7 +2,7 @@
 
 Each release is tagged `vX.Y.Z` on its `chore: release X.Y.Z` commit.
 
-## Unreleased
+## 0.4.0 - 2026-11-26
 
 - Show the header usage rings on the new-thread composer too. The provider selected there leads the rings until the first message creates a thread.
 
